@@ -141,22 +141,14 @@ class MPIArchitectureConfig:
 
 
     def mpi_print_role(self):
+        local_output = "Global Rank: {}, Group Index: {}, Group Rank: {}, Role: {}".format(
+            self.global_rank, self.group, self.group_rank, self.role
+        )
+
+        all_outputs = self.global_comm.gather(local_output, root=0)
+
         if self.global_rank == 0:
             print("<<<<<<<<<<<<<<<<<< architecture configuration <<<<<<<<<<<<<<<<<<", flush=True)
-
-        if self.global_rank != 0:
-            local_output = "Global Rank: {}, Group Index: {}, Group Rank: {}, Role: {}".format(
-                self.global_rank, self.group, self.group_rank, self.role
-            )
-            self.global_comm.send(local_output, dest=0)
-        else:
-            local_output = "Global Rank: {}, Group Index: {}, Group Rank: {}, Role: {}".format(
-                self.global_rank, self.group, self.group_rank, self.role
-            )
-            print(local_output, flush=True)
-
-            for i in range(1, self.global_size):
-                output = self.global_comm.recv(source=i)
+            for output in all_outputs:
                 print(output, flush=True)
-        if self.global_rank == 0:
             print(">>>>>>>>>>>>>>>>>> architecture configuration >>>>>>>>>>>>>>>>>>", flush=True)
