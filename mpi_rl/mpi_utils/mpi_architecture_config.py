@@ -20,6 +20,11 @@ class MPIArchitectureConfig:
         self.num_training_workers = num_training_workers
         self.num_evaluation_workers = num_evaluation_workers
 
+        # whether evaluation is needed
+        self.with_evaluation = True
+        if self.parallel_train_eval == False and self.num_evaluation_workers == 0:
+            self.with_evaluation = False
+
         # check the configuration
         self.__check()
 
@@ -138,7 +143,6 @@ class MPIArchitectureConfig:
             assert self.num_workers_per_group is not None, (
                 "num_workers_per_group should be specified when centralized_training is False."
             )
-
 
     def mpi_print_role(self):
         local_output = "Global Rank: {}, Group Index: {}, Group Rank: {}, Role: {}".format(
