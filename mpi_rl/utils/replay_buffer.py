@@ -42,9 +42,7 @@ class Episode(list):
             same_struct = same_structure_recursive(self[-1]["transaction"], transaction, self.strict)
             if not same_struct:
                 raise ValueError("The structure of the new transaction is different from the previous one.")
-        self.append(dict(transaction=transaction, index_in_episode=len(self)))
-
-    # more methods to calculate metrics
+        self.append(dict(transaction=copy.deepcopy(transaction), index_in_episode=len(self)))
 
 class Batch(list):
     """
@@ -79,7 +77,7 @@ class ReplayBuffer(list):
             if length_now + length_to_add > self.max_length:
                 length_to_remove = length_now + length_to_add - self.max_length
                 del self[:length_to_remove]
-        self.extend(map(lambda x: dict(x, episode_index=self.episode_index), episode))
+        self.extend(map(lambda x: dict(x, episode_index=self.episode_index), copy.deepcopy(episode)))
         self.episode_index += 1
 
     @abstractmethod

@@ -125,4 +125,7 @@ dmypy.json
 cython_debug/
 
 # self defined
-test_*/
+test/
+.vscode/
+my_secret_keys.py
+exps/
