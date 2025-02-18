@@ -287,17 +287,21 @@ class LLM(BaseAlgorithm):
 
         self.policy_conclusion = content
 
-    def post_train_mpi(self):
+    def post_train(self):
         """
         Broadcast the policy conclusion and collected episodes to all the ranks.
         All ranks store collected episodes to replay_buffer.
         """
-        self.temp_episodes_llm_algo_specific = \
-            self.mpi_architecture_config.group_comm.broadcast(self.temp_episodes_llm_algo_specific, root=0)
-        for e in self.temp_episodes_llm_algo_specific:
-            self.replay_buffer.insert_episode(e)
-        self.policy_conclusion = \
-            self.mpi_architecture_config.group_comm.broadcast(self.policy_conclusion, root=0)
+        if self.mpi_architecture_config is None:
+            for e in self.temp_episodes_llm_algo_specific:
+                self.replay_buffer.insert_episode(e)
+        else:
+            self.temp_episodes_llm_algo_specific = \
+                self.mpi_architecture_config.group_comm.broadcast(self.temp_episodes_llm_algo_specific, root=0)
+            for e in self.temp_episodes_llm_algo_specific:
+                self.replay_buffer.insert_episode(e)
+            self.policy_conclusion = \
+                self.mpi_architecture_config.group_comm.broadcast(self.policy_conclusion, root=0)
 
     # ----------------- LLM algorithm specific functions -----------------
     
@@ -309,7 +313,7 @@ class LLM(BaseAlgorithm):
         episode_index = 0
         for i in range(len(replay_buffer)):
             transaction = self.algorithm_config.transaction_process_fn(replay_buffer[i]["transaction"])
-            index = replay_buffer[i]["index_in_episode"]
+            index = replay_buffer[i]["episode_index"]
             if index == episode_index+1:
                 str_list.append("++++++++++\n")
                 episode_index += 1
