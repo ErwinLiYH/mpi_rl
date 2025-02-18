@@ -2,6 +2,7 @@ import gymnasium as gym
 from pettingzoo import ParallelEnv
 from pettingzoo import AECEnv
 import multiprocessing
+from functools import reduce
 
 def get_env_type(env):
     if isinstance(env, gym.Env):
@@ -44,6 +45,17 @@ class DummyLogger:
 
     def warning(self, *args, **kwargs):
         pass
+
+def dedent(input_seq:str, char, line_sep="\n", plus_char="    "):
+    lines = input_seq.split("\n")
+    for i in range(len(lines)):
+        if lines[i].startswith(char):
+            lines[i] = lines[i][len(char):]
+        elif lines[i]=="":
+            pass
+        else:
+            lines[i] = plus_char+lines[i]
+    return line_sep.join(lines)
 
 class RemoteObjectProxy:
     """
@@ -114,3 +126,8 @@ class RemoteObjectProxy:
             self.parent_conn.send("close")
             self.process.join()
         self.parent_conn.close()
+
+def Pipeline(*funcs):
+    def pipeline_two(f, g):
+        return lambda x: g(f(x))
+    return reduce(pipeline_two, funcs, lambda x: x)
