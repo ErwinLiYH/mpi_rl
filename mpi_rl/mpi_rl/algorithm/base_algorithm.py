@@ -187,6 +187,10 @@ class BaseAlgorithm:
             if self.env_type in ["pzp", "gym"]:
                 while True:  # step loop
                     action = self.compute_action(obs)
+                    if self.mpi_architecture_config is not None:
+                        self.logger.info(f"Rank {self.mpi_architecture_config.group_rank} - Group {self.mpi_architecture_config.group} - State {self.status} - Step {collected_steps} - Action: {action}")
+                    else:
+                        self.logger.info(f"Step {collected_steps} - {self.status} - Action: {action}")
                     next_obs, reward, termination, truncation, info = self._env.step(action)
                     if self.transaction_process_fn is not None:
                         obs, action, reward, next_obs, termination, truncation, info = \
@@ -283,8 +287,7 @@ class BaseAlgorithm:
                                     )
     
     def train_iteration(self):
-        self.logger.info("-"*25)
-        self.logger.info(f"Start iteration {self.progress_info['current_iteration']}")
+        self.logger.info("-"*25+f"Start iteration {self.progress_info['current_iteration']}"+"-"*25)
         if self.mpi_architecture_config is not None:
             self.train_iteration_mpi()
         else:
@@ -293,6 +296,7 @@ class BaseAlgorithm:
     def train_iteration_mpi(self):
         self.global_comm.Barrier()
         if  "training" in self.mpi_architecture_config.role:
+            self.logger.info(f"Start training in rank {self.mpi_architecture_config.group_rank} of group {self.mpi_architecture_config.group}")
             with self.train_state():
                 # each rank rollout and collect episodes
                 local_episodes = self.rollout()
@@ -302,8 +306,9 @@ class BaseAlgorithm:
                 if self.mpi_architecture_config.group_rank == 0:
                     flatted_episodes = flat_double_layer_list(episodes)
                     self.train(flatted_episodes)
-                self.post_train_mpi()
+                self.post_train()
         if "evaluation" in self.mpi_architecture_config.role and self.with_evaluation and self.progress_info["current_iteration"]%self.eval_interval==0:
+            self.logger.info(f"Start evaluation in rank {self.mpi_architecture_config.group_rank} of group {self.mpi_architecture_config.group}")
             with self.eval_state():
                 # each rank rollout and collect episodes
                 local_episodes = self.rollout()
@@ -316,9 +321,9 @@ class BaseAlgorithm:
         self.progress_info["current_iteration"] += 1
         self.global_comm.Barrier()
 
-    def post_train_mpi(self):
+    def post_train(self):
         """
-        Run after the train() in MPI mode. To synchronize the models.
+        Run after the train(). To synchronize the models.
         """
         pass
 
@@ -326,6 +331,7 @@ class BaseAlgorithm:
         with self.train_state():
             episodes = self.rollout()
             self.train(episodes)
+            self.post_train()
         if self.with_evaluation and self.progress_info["current_iteration"]%self.eval_interval==0:
             with self.eval_state():
                 episodes = self.rollout()
