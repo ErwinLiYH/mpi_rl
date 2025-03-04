@@ -107,7 +107,7 @@ class RoundRobinInvoker(BaseInvoker):
 
     def __call__(self, messages:MessagesT) -> Invoker_outputT:
         last_exception = None
-        for _ in range(self.try_round):
+        for r in range(self.try_round):
             for _ in range(len(self.invokers)):
                 current_index = self.index
                 invoker = self.invokers[current_index]
@@ -120,7 +120,9 @@ class RoundRobinInvoker(BaseInvoker):
                     self.fail_invoke_times[f"invoker_{current_index}"] += 1
                     last_exception = e
                     self.last_exceptions[f"invoker_{current_index}"] = e
-            time.sleep(self.sleep_btw_round)
+            if r < self.try_round - 1:
+                # sleep except the last round
+                time.sleep(self.sleep_btw_round)
         if last_exception is not None:
             raise last_exception
         else:
