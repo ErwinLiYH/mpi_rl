@@ -103,6 +103,7 @@ class RoundRobinInvoker(BaseInvoker):
         self.sleep_btw_round = sleep_btw_round
         self.success_invoke_times = {f"invoker_{i}": 0 for i in range(len(self.invokers))}
         self.fail_invoke_times = {f"invoker_{i}": 0 for i in range(len(self.invokers))}
+        self.last_exceptions = {f"invoker_{i}": None for i in range(len(self.invokers))}
 
     def __call__(self, messages:MessagesT) -> Invoker_outputT:
         last_exception = None
@@ -118,6 +119,7 @@ class RoundRobinInvoker(BaseInvoker):
                 except Exception as e:
                     self.fail_invoke_times[f"invoker_{current_index}"] += 1
                     last_exception = e
+                    self.last_exceptions[f"invoker_{current_index}"] = e
             time.sleep(self.sleep_btw_round)
         if last_exception is not None:
             raise last_exception
@@ -185,7 +187,7 @@ class DummyTokenCounter(BaseTokenCounter):
 
 # ------------------ Content filter ------------------
 
-def llm_action_filter(
+def json_filter(
         content:ContentT
         ):
     from jsonc_parser.parser import JsoncParser
