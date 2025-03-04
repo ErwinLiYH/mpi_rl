@@ -1,6 +1,6 @@
 import requests
 import re
-from tenacity import retry, stop_after_attempt, RetryError, retry_if_not_exception_type, wait_fixed, wait_none
+from tenacity import retry, stop_after_attempt, RetryError, retry_if_not_exception_type, wait_fixed, wait_none, wait_exponential
 from typing import Callable, Any
 import time
 
@@ -75,63 +75,54 @@ class GeneralRequestInvoker(BaseInvoker):
         self.payload.update(kwargs)
 
     def __call__(self, messages:MessagesT) -> Invoker_outputT:
-        @retry(
-            stop=stop_after_attempt(self.max_retry),
-            wait=wait_fixed(self.rate_limit_sleep) if self.wait else wait_none(),
-            )
-        def inner():
-            this_time = time.time()
-            if self.rate_limit_sleep_begin_time is not None and this_time - self.rate_limit_sleep_begin_time < self.rate_limit_sleep:
-                remaining_time = self.rate_limit_sleep - (this_time - self.rate_limit_sleep_begin_time)
-                raise RateLimitError("In rate limit sleep, wait {}s".format(remaining_time))
-            else:
-                self.rate_limit_sleep_begin_time = None
-                self.payload["messages"] = messages
-                response = requests.request("POST", self.full_url, json=self.payload, headers=self.headers, timeout=1800)
+        self.payload["messages"] = messages
+        response = requests.request("POST", self.full_url, json=self.payload, headers=self.headers, timeout=1800)
 
-                if response.status_code == 200:
-                    content = response.json()["choices"][0]["message"]["content"]
-                    reasoning_content = response.json()["choices"][0]["message"].get("reasoning_content", None)
-                    num_input_tokens = response.json()["usage"]["prompt_tokens"]
-                    num_output_tokens = response.json()["usage"]["completion_tokens"]
-                    filtered_content = self.content_filter_fn(content)
-                    return content, filtered_content, reasoning_content, num_input_tokens, num_output_tokens
-                elif response.status_code == self.rate_limit_code:
-                    self.rate_limit_sleep_begin_time = time.time()
-                    raise RateLimitError(f"Rate limit error: {response.text}")
-                else:
-                    raise ValueError(f"API error: {response.text}")
+        if response.status_code == 200:
+            content = response.json()["choices"][0]["message"]["content"]
+            reasoning_content = response.json()["choices"][0]["message"].get("reasoning_content", None)
+            num_input_tokens = response.json()["usage"]["prompt_tokens"]
+            num_output_tokens = response.json()["usage"]["completion_tokens"]
+            filtered_content = self.content_filter_fn(content)
+            return content, filtered_content, reasoning_content, num_input_tokens, num_output_tokens
+        elif response.status_code == self.rate_limit_code:
+            self.rate_limit_sleep_begin_time = time.time()
+            raise RateLimitError(f"Rate limit error: {response.text}")
+        else:
+            raise ValueError(f"API error: {response.text}")
+
         
-        try:
-            return inner()
-        except RetryError as e:
-            raise e.last_attempt.exception()
-
-class DoubleInvoker(BaseInvoker):
+class RoundRobinInvoker(BaseInvoker):
     """
-    Main invoker and vice invoker
+    Round robin invoker, invoke invokers in order.
     """
-    def __init__(self, main_invoker:BaseInvoker, vice_invoker:BaseInvoker, max_retry:int = 10, rate_limit_sleep:int = 60):
-        self.main_invoker = main_invoker
-        self.vice_invoker = vice_invoker
-        self.max_retry = max_retry
-        self.rate_limit_sleep = rate_limit_sleep
+    def __init__(self, *invokers:BaseInvoker, try_round:int = 1, sleep_btw_round:int = 0):
+        self.invokers = invokers
+        self.index = 0
+        self.try_round = try_round
+        self.sleep_btw_round = sleep_btw_round
+        self.success_invoke_times = {f"invoker_{i}": 0 for i in range(len(self.invokers))}
+        self.fail_invoke_times = {f"invoker_{i}": 0 for i in range(len(self.invokers))}
 
     def __call__(self, messages:MessagesT) -> Invoker_outputT:
-        @retry(
-                stop=stop_after_attempt(self.max_retry),
-                wait=wait_fixed(self.rate_limit_sleep),
-                )
-        def inner():
-            try:
-                return self.main_invoker(messages)
-            except:
-                return self.vice_invoker(messages)
-            
-        try:
-            return inner()
-        except RetryError as e:
-            raise e.last_attempt.exception()
+        last_exception = None
+        for _ in range(self.try_round):
+            for _ in range(len(self.invokers)):
+                current_index = self.index
+                invoker = self.invokers[current_index]
+                self.index = (current_index + 1) % len(self.invokers)
+                try:
+                    res = invoker(messages)
+                    self.success_invoke_times[f"invoker_{current_index}"] += 1
+                    return res
+                except Exception as e:
+                    self.fail_invoke_times[f"invoker_{current_index}"] += 1
+                    last_exception = e
+            time.sleep(self.sleep_btw_round)
+        if last_exception is not None:
+            raise last_exception
+        else:
+            raise RuntimeError("No invokers available")
 
 
 # ------------------ Token counter ------------------
