@@ -1,6 +1,5 @@
 import requests
 import re
-from tenacity import retry, stop_after_attempt, RetryError, retry_if_not_exception_type, wait_fixed, wait_none, wait_exponential
 from typing import Callable, Any
 import time
 
