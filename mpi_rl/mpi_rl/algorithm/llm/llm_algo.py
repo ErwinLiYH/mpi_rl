@@ -13,7 +13,7 @@ else:
 from mpi_rl.mpi_rl.algorithm.base_algorithm import BaseAlgorithm, BaseAlgorithmConfig
 from dataclasses import dataclass
 
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from mpi_rl.utils.replay_buffer import Episode, ReplayBuffer
 from mpi_rl.utils.config_helper import RolloutConfig
@@ -31,10 +31,12 @@ from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Markdown_Path_Without_NameT, M
 
 @dataclass
 class LLMConfig(BaseAlgorithmConfig):
-    system_prompt: str
+    system_description: str
     action_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     reflection_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     metrics_statistics_fn:Callable[[Episode], Any]
+    system_description_in_user: bool = False
+    eval_invoke_fn: Optional[Callable[[MessagesT], Invoker_outputT]] = None
     model_tokens_counter_fn: Callable[[Input_SequenceT],int] = None
     max_tokens_input: int = None
     transaction_process_fn: Callable = lambda x: x     # A function to process the transaction before convert to json string,
@@ -47,8 +49,12 @@ class LLMConfig(BaseAlgorithmConfig):
     obs_process_fn: Callable = lambda x: x     # A function to process the observation before convert to json string, similar to transaction_process_fn
     round_digits: int = 2
     gen_markdown: None|Markdown_Path_Without_NameT = None
-    act_prompt: str = "Please generate action according to the current episode history and previous policy conclusion."
-    reflection_prompt: str = "These are some full episode history and the policy previously generated, please generate reflection on them. Think about whether the episode is good enough, whether there are spaces for improvement, and how to act later. Think about how improve the current policy (if exit) and generate a new policy conclusion. If previous policy is None, just generate a new one. Don't need generate action json structure here."
+    act_user_template: str = "Please generate action according to the current episode history and previous policy conclusion."
+    act_assistant_template: str = ""
+    eval_user_template: str = "Please generate action according to the current episode history and previous policy conclusion."
+    eval_assistant_template: str = ""
+    reflection_user_template: str = "These are some full episode history and the policy previously generated, please generate reflection on them. Think about whether the episode is good enough, whether there are spaces for improvement, and how to act later. Think about how improve the current policy (if exit) and generate a new policy conclusion. If previous policy is None, just generate a new one. Don't need generate action json structure here."
+    reflection_assistant_template: str = ""
 
     def __post_init__(self):
         # model_tokens_counter_fn and max_tokens_input should be None together or not None together
