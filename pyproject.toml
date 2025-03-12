@@ -18,10 +18,9 @@ dependencies = [
 [tool.setuptools]
 packages = ["mpi_rl"]
 
-# [project.optional-dependencies]
-# dev = [
-#     "pytest>=6.2.4",
-#     "black>=21.7b0",
-#     "flake8>=3.9.2"
-# ]
+[project.optional-dependencies]
+llm = [
+    "tiktoken",
+    "transformers",
+]
 
