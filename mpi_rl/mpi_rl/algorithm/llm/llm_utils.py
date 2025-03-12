@@ -33,15 +33,14 @@ class GeneralRequestInvoker(BaseInvoker):
     """
     def __init__(
             self,
-            API_key:str,
             full_url:str,
             model_name:str,
-            max_retry:int = 3,
+            API_key:str = None,
             top_p:int = 0.7,
             temperature:float = 0.6,
             top_k:int = 50,
             frequency_penalty: float = 0,
-            max_output_tokens: int = 8192,
+            max_tokens: int = 8192,
             content_filter_fn: Callable[[ContentT], Any] = lambda x: None,
             rate_limit_code: int = 429,
             rate_limit_sleep: int = 60,
@@ -51,7 +50,7 @@ class GeneralRequestInvoker(BaseInvoker):
         self.payload = {
             "model": model_name,
             "stream": False,
-            "max_tokens": max_output_tokens,
+            "max_tokens": max_tokens,
             "stop": ["null"],
             "temperature": temperature,
             "top_p": top_p,
@@ -60,15 +59,18 @@ class GeneralRequestInvoker(BaseInvoker):
             "n": 1,
             "response_format": {"type": "text"},
         }
-        self.headers = {
-            "Authorization": f"Bearer {API_key}",
-            "Content-Type": "application/json"
-        }
-        self.max_retry = max_retry
+        if API_key is not None:
+            self.headers = {
+                "Authorization": f"Bearer {API_key}",
+                "Content-Type": "application/json"
+            }
+        else:
+            self.headers = {
+                "Content-Type": "application/json"
+            }
         self.content_filter_fn = content_filter_fn
         self.rate_limit_code = rate_limit_code
         self.rate_limit_sleep = rate_limit_sleep
-        self.rate_limit_sleep_begin_time = None
         self.wait = wait
 
     def update_payload(self, **kwargs):
@@ -86,7 +88,6 @@ class GeneralRequestInvoker(BaseInvoker):
             filtered_content = self.content_filter_fn(content)
             return content, filtered_content, reasoning_content, num_input_tokens, num_output_tokens
         elif response.status_code == self.rate_limit_code:
-            self.rate_limit_sleep_begin_time = time.time()
             raise RateLimitError(f"Rate limit error: {response.text}")
         else:
             raise ValueError(f"API error: {response.text}")
