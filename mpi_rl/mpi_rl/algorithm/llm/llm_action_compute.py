@@ -6,12 +6,13 @@ from typing import Callable, Any
 
 class MultiAgentDebate(BaseInvoker):
     def __init__(self, invoker: BaseInvoker, n_agents: int, max_rounds: int,
-                 filter_fn: Callable[[Invoker_outputT], Any] = lambda x: x[1]["action"],
+                 filter_fn: Callable[[Invoker_outputT], Any] = None, hand_consensus = True,
                  zh=False, debate_prompt_en=None, debate_prompt_zh=None):
         self.invoker = invoker
         self.n_agents = n_agents
         self.max_rounds = max_rounds
         self.filter_fn = filter_fn
+        self.hand_consensus = hand_consensus
         self.debate_prompt_en = "These are the solutions to the problem from other agents: {other_answers}\n\nBased off the opinion of other agents, can you give an updated response" \
             if debate_prompt_en is None else debate_prompt_en
         self.debate_prompt_zh = "以下是其他代理的解决方案: {other_answers}\n\n请参考后给出更新后的回答"\
@@ -42,12 +43,16 @@ class MultiAgentDebate(BaseInvoker):
                 content, filtered_content, _, in_tokens, out_tokens = output
                 total_input_tokens += in_tokens
                 total_output_tokens += out_tokens
+
+                if self.hand_consensus:
+                    print(f"{agent_id}: \n{content}\n\n")
                 
                 self.conversations[agent_id].append({
                     "role": "assistant",
                     "content": content
                 })
-                actions_this_round.append(self.filter_fn(filtered_content))
+                if self.hand_consensus == False:
+                    actions_this_round.append(self.filter_fn(filtered_content))
                 outputs_this_round[agent_id] = output
 
             self.actions_each_round.append(actions_this_round)
@@ -87,4 +92,19 @@ class MultiAgentDebate(BaseInvoker):
         )
 
     def _check_consensus(self, actions: list) -> bool:
-        return all(a == actions[0] for a in actions)
+        if self.hand_consensus == False:
+            return all(a == actions[0] for a in actions)
+        else:
+            consensus = None
+            while True:
+                consensus_str = input("Does all agents agree each other? (y/n): ")
+                if consensus_str == "y":
+                    consensus = True
+                    break
+                elif consensus_str == "n":
+                    consensus = False
+                    break
+                else:
+                    print("Bad input, please try again, input \"y\" or \"n\"")
+            print("-"*40)
+            return consensus
