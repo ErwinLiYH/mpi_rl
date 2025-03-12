@@ -7,13 +7,15 @@ from typing import Callable, Any
 class MultiAgentDebate(BaseInvoker):
     def __init__(self, invoker: BaseInvoker, n_agents: int, max_rounds: int,
                  filter_fn: Callable[[Invoker_outputT], Any] = lambda x: x[1]["action"],
-                 zh=False):
+                 zh=False, debate_prompt_en=None, debate_prompt_zh=None):
         self.invoker = invoker
         self.n_agents = n_agents
         self.max_rounds = max_rounds
         self.filter_fn = filter_fn
-        self.debate_prompt_en = "I provide you some solutions from other assistants, these solutions may wrong or correct, analyze whether they are correct and give me a updated response. the response should contain analysis and final result, final result is json format like: {\"answer\": \"the answer\"}"
-        self.debate_prompt_zh = "以下是其他代理的解决方案，请参考后给出更新后的回答："
+        self.debate_prompt_en = "These are the solutions to the problem from other agents: {other_answers}\n\nBased off the opinion of other agents, can you give an updated response" \
+            if debate_prompt_en is None else debate_prompt_en
+        self.debate_prompt_zh = "以下是其他代理的解决方案: {other_answers}\n\n请参考后给出更新后的回答"\
+            if debate_prompt_zh is None else debate_prompt_zh
         self.zh = zh
         self.conversations = {f"agent_{i}": [] for i in range(n_agents)}
         self.actions_each_round = []
@@ -63,9 +65,10 @@ class MultiAgentDebate(BaseInvoker):
                 ]
 
                 debate_content = "\n\n".join(
-                    [f"{aid}:\n{resp}" for aid, resp in other_responses]
+                    [f"**{aid}**:\n{resp}" for aid, resp in other_responses]
                 )
-                prompt = f"{self.debate_prompt_zh if self.zh else self.debate_prompt_en}\n{debate_content}"
+                prompt = self.debate_prompt_zh if self.zh else self.debate_prompt_en
+                prompt = prompt.format(other_answers=debate_content)
                 self.conversations[agent_id].append({
                     "role": "user",
                     "content": prompt
