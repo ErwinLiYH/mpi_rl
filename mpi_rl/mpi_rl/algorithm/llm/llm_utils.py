@@ -42,8 +42,6 @@ class GeneralRequestInvoker(BaseInvoker):
             max_tokens: int = 8192,
             content_filter_fn: Callable[[ContentT], Any] = lambda x: None,
             rate_limit_code: int = 429,
-            rate_limit_sleep: int = 60,
-            wait = False    # wait rate_limit_sleep when retry
             ):
         self.full_url = full_url
         self.payload = {
@@ -69,8 +67,6 @@ class GeneralRequestInvoker(BaseInvoker):
             }
         self.content_filter_fn = content_filter_fn
         self.rate_limit_code = rate_limit_code
-        self.rate_limit_sleep = rate_limit_sleep
-        self.wait = wait
 
     def update_payload(self, **kwargs):
         self.payload.update(kwargs)
