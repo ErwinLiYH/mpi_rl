@@ -42,6 +42,7 @@ class GeneralRequestInvoker(BaseInvoker):
             max_tokens: int = 8192,
             content_filter_fn: Callable[[ContentT], Any] = lambda x: None,
             rate_limit_code: int = 429,
+            timeout = 1800
             ):
         self.full_url = full_url
         self.payload = {
@@ -67,13 +68,14 @@ class GeneralRequestInvoker(BaseInvoker):
             }
         self.content_filter_fn = content_filter_fn
         self.rate_limit_code = rate_limit_code
+        self.timeout = timeout
 
     def update_payload(self, **kwargs):
         self.payload.update(kwargs)
 
     def __call__(self, messages:MessagesT) -> Invoker_outputT:
         self.payload["messages"] = messages
-        response = requests.request("POST", self.full_url, json=self.payload, headers=self.headers, timeout=1800)
+        response = requests.request("POST", self.full_url, json=self.payload, headers=self.headers, timeout=self.timeout)
 
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"]
