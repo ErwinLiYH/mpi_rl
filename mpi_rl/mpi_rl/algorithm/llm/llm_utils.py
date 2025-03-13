@@ -5,7 +5,7 @@ import time
 
 # ------------------ Typing Alias ------------------
 
-Markdown_Path_Without_NameT = str
+Path_Without_NameT = str
 MessagesT = list[dict[str, str]]
 ContentT = str
 Filtered_ContentT = Any

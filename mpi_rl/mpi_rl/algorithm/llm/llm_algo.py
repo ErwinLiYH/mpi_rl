@@ -18,27 +18,33 @@ from typing import Any, Callable, Optional
 from mpi_rl.utils.replay_buffer import Episode, ReplayBuffer
 from mpi_rl.utils.config_helper import RolloutConfig
 
-from mpi_rl.utils import dedent
-from functools import partial
+from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate
+from mpi_rl.utils import remove_first_line
+
 import json
 import os
 
 from tenacity import retry, stop_after_attempt
 
 # Typing Aliases
-from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Markdown_Path_Without_NameT, MessagesT, \
+from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Path_Without_NameT, MessagesT, \
     ContentT, Reasoning_ContentT, Num_Input_TokensT, Num_Output_TokensT, Input_SequenceT, Invoker_outputT
 
 @dataclass
 class LLMConfig(BaseAlgorithmConfig):
     system_description: str
-    action_invoke_fn: Callable[[MessagesT], Invoker_outputT]
-    reflection_invoke_fn: Callable[[MessagesT], Invoker_outputT]
+    act_prompt:str
+    reflex_prompt:str
+    act_invoke_fn: Callable[[MessagesT], Invoker_outputT]
+    reflex_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     metrics_statistics_fn:Callable[[Episode], Any]
-    system_description_in_user: bool = False
+    system_prompt: Optional[str] = None
+    system_description_in_user: bool = True
     eval_invoke_fn: Optional[Callable[[MessagesT], Invoker_outputT]] = None
-    model_tokens_counter_fn: Callable[[Input_SequenceT],int] = None
-    max_tokens_input: int = None
+    reflex_model_tokens_counter_fn: Callable[[Input_SequenceT],int] = None
+    act_model_tokens_counter_fn: Callable[[Input_SequenceT],int] = None
+    reflex_max_tokens_input: int = None
+    act_max_tokens_input: int = None
     transaction_process_fn: Callable = lambda x: x     # A function to process the transaction before convert to json string,
                                                        # do 1.select the useful data, 2. convert the data type to basic type.
                                                        # Need convert numpy array or pytorch tensor to list to save space
@@ -48,13 +54,9 @@ class LLMConfig(BaseAlgorithmConfig):
                                                        # if using `IntFloatEncoder`, it will be "[1.11, 2, 3]"
     obs_process_fn: Callable = lambda x: x     # A function to process the observation before convert to json string, similar to transaction_process_fn
     round_digits: int = 2
-    gen_markdown: None|Markdown_Path_Without_NameT = None
-    act_user_template: str = "Please generate action according to the current episode history and previous policy conclusion."
-    act_assistant_template: str = ""
-    eval_user_template: str = "Please generate action according to the current episode history and previous policy conclusion."
-    eval_assistant_template: str = ""
-    reflection_user_template: str = "These are some full episode history and the policy previously generated, please generate reflection on them. Think about whether the episode is good enough, whether there are spaces for improvement, and how to act later. Think about how improve the current policy (if exit) and generate a new policy conclusion. If previous policy is None, just generate a new one. Don't need generate action json structure here."
-    reflection_assistant_template: str = ""
+    record_conversation: None|Path_Without_NameT = None
+    max_history:int = 50
+    reflex_batch:int = 5
 
     def __post_init__(self):
         # model_tokens_counter_fn and max_tokens_input should be None together or not None together
@@ -72,7 +74,7 @@ class LLM(BaseAlgorithm):
     """
     def __init__(
             self,
-            train_env_creator: Callable,
+            train_env_creator:Callable,
             train_rollout_config:RolloutConfig,
             eval_env_creator: Callable = None,
             eval_rollout_config:RolloutConfig = None,
@@ -103,195 +105,148 @@ class LLM(BaseAlgorithm):
 
         self.policy_conclusion = None
 
+        if self.algorithm_config.system_description_in_user:
+            self.act_template = ActTemplate(algorithm_config.system_description, algorithm_config.act_prompt)
+            self.reflex_template = ReflexTemplate(algorithm_config.system_description, algorithm_config.reflex_prompt)
+            self.system_prompt = self.algorithm_config.system_prompt
+        else:
+            self.act_template = ActTemplate("", algorithm_config.act_prompt)
+            self.reflex_template = ReflexTemplate("", algorithm_config.reflex_prompt)
+            if self.algorithm_config.system_prompt != None:
+                self.system_prompt = self.algorithm_config.system_prompt + "\n\n" + self.algorithm_config.system_description
+            else:
+                self.system_prompt = self.algorithm_config.system_description
+
     def check_config(self):
         assert isinstance(self.algorithm_config, LLMConfig), "algorithm_config should be LLMConfig."
 
     def compute_action(self, obs):
-        compressed_replay_buffer_str = self.replay_buffer_to_str(self.replay_buffer, separators=(',', ':')) \
-            if len(self.replay_buffer) > 0 else 'None'
-        compressed_episode_str = self.episode_to_str(self.operating_episode, separators=(',', ':')) \
-            if len(self.operating_episode) > 0 else 'None'
+        episode_str = self.episode_to_str(
+            self.operating_episode[-self.algorithm_config.max_history:],
+            separators=(',', ':')
+        ) if len(self.operating_episode) > 0 else 'None'
+        
+        partial_episode = "下面是按顺序排列的历史步骤:\n(倒数第一行是前一步历史, 倒数第二行是钱两步历史, 以此类推)\n\n"\
+                        + episode_str \
+                        + "\n\n"
+        
         obs_str = json.dumps(self.algorithm_config.obs_process_fn(obs), cls=IntFloatEncoder, 
                              round_digits=self.algorithm_config.round_digits, 
                              separators=(',', ':'), sort_keys=True, ensure_ascii=False, default=str)
+        
+        obs = "下面是此步的观测:\n\n"\
+            + obs_str \
+            + "\n\n"
 
-        input_sequence = dedent(f"""\
-            **Previous Episodes History (separated by '++++++++++'):**
-            {compressed_replay_buffer_str}
+        input_sequence = self.act_template.format(
+            obs=obs,
+            partial_episode=partial_episode
+        )
 
-            **Current Episode History:**
-            {compressed_episode_str}
-            
-            **Current Observation:**
-            {obs_str}
-
-            **Previous Policy:**
-            {self.policy_conclusion if self.policy_conclusion is not None else 'None'}
-
-            {self.algorithm_config.act_prompt}""", char=' '*12, plus_char='')
-
-        # check if need to reduce previous replay buffer
+        # check if need to reduce episode history
         expected_input_token_count = \
-            self.algorithm_config.model_tokens_counter_fn(input_sequence+self.algorithm_config.system_prompt)
+            self.algorithm_config.act_model_tokens_counter_fn(input_sequence+self.system_prompt)
         self.logger.debug(f"Expected Input token count: {expected_input_token_count}")
-        if expected_input_token_count > self.algorithm_config.max_tokens_input:
+        if expected_input_token_count > self.algorithm_config.act_max_tokens_input:
             self.logger.info(f"Expected Input token count: {expected_input_token_count} \
-                             > max_tokens_input: {self.algorithm_config.max_tokens_input}.")
-            to_reduce = expected_input_token_count - self.algorithm_config.max_tokens_input
-            encoded_replay_buffer_str = self.encoder(compressed_replay_buffer_str)
+                             > act_max_tokens_input: {self.algorithm_config.act_max_tokens_input}.")
+            to_reduce = expected_input_token_count - self.algorithm_config.act_max_tokens_input
+            encoded_episode_str = self.encoder(episode_str)
             # reduce previous replay buffer
-            encoded_replay_buffer_str = encoded_replay_buffer_str[to_reduce+10:]   # plus 10 for safety
-            compressed_replay_buffer_str = self.encoder.decode(encoded_replay_buffer_str)
+            encoded_episode_str = encoded_episode_str[to_reduce+10:]   # plus 10 for safety
+            encoded_episode_str = self.encoder.decode(encoded_episode_str)
+            encoded_episode_str = remove_first_line(encoded_episode_str)  # remove first uncompleted line
+            partial_episode = "下面是按时间顺序排列的历史步骤:\n(倒数第一行是前一步历史, 倒数第二行是前两步历史, 以此类推)\n\n"\
+                            + episode_str \
+                            + "\n\n"
+            input_sequence = self.act_template.format(
+                obs=obs,
+                partial_episode=partial_episode
+            )
         
         self.logger.debug(input_sequence)
 
         content, llm_action, reasoning_content, input_len, output_len = \
             self.invoke_api(input_sequence)
 
-        # record in markdown
-        if self.algorithm_config.gen_markdown is not None:
-            reasoning_template = "<details>\n    <summary>Thinking:\
-                </summary>\n   {reasoning_content}\n</details>"
-
-            record_str = dedent(f"""\
-                **User:**
-
-                <details>
-                    <summary>Previous Episodes History (separated by '++++++++++'):</summary>
-                    {self.replay_buffer_to_str(self.replay_buffer) if len(self.replay_buffer) > 0 else 'None'}
-                </details>
-                
-                <details>
-                    <summary>Current Episode History:</summary>
-                    {self.episode_to_str(self.operating_episode) if len(self.operating_episode) > 0 else 'None'}
-                </details>
-
-                Current Observation:
-                {obs_str}
-
-                <details>
-                    <summary>Previous Policy</summary>
-                    {self.policy_conclusion if self.policy_conclusion is not None else 'None'}
-                </details>
-
-                {self.algorithm_config.act_prompt}
-                
-                **Model:**
-                {
-                    reasoning_template.format(reasoning_content=reasoning_content)
-                    if reasoning_content is not None else ''
-                }
-
-                <details>
-                    <summary>Content:</summary>
-                    {content}
-                </details>
-
-                *Steps: {len(self.operating_episode)+1}, Token usage <Expected input: {expected_input_token_count}; Input: {input_len}; Output: {output_len}>*
-
-                ---\n""", char=' '*16)
-
-            with open(f"{os.path.join(self.algorithm_config.gen_markdown, self.name)}_ca_{self.status}_history.md", 'a') as f:
-                f.write(record_str)
+        # record
+        if self.algorithm_config.record_conversation:
+            with open(f"{os.path.join(self.algorithm_config.record_conversation, self.name)}_compute_act_{self.status}_history.txt", 'a') as f:
+                conversation = self.make_conversation(
+                    input_sequence, reasoning_content, content, expected_input_token_count, input_len, output_len
+                )
+                f.write(conversation)
         
-        # if len(self.operating_episode) > 0:
-        #     self.operating_episode[-1]["reflection"] = llm_action["prev_step_reflection"]
-
-        self.operating_transaction.update({"prev_step_reflection": llm_action["prev_step_reflection"]})
+        if len(self.operating_episode) > 0:
+            self.operating_episode[-1]["per_step_reflection"] = llm_action["prev_step_reflection"]
         self.operating_transaction.update({"analysis": llm_action["analysis"]})
 
         return llm_action["action"]
 
-    def train(self, episodes: Episode):
+    def train(self, episodes: list[Episode]):
         self.temp_episodes_llm_algo_specific = episodes
         # This algorithm need to store the episodes to replay_buffer in all ranks in MPI mode,
-        # so we store the episodes in a temporary variable and store them to replay_buffer in post_train_mpi
+        # so we store the episodes in a temporary variable and store them to replay_buffer in post_train
         # which will run on all ranks.
 
-        metrics = [self.algorithm_config.metrics_statistics_fn(episodes[i]) for i in range(len(episodes))]
+        for idx, ep in enumerate(episodes):
+            self.reflex(ep, idx)
 
-        template_compressed = dedent("""\
-        **Episode {n}:**
-        {episode}
-        **Metrics for episode {n}**
-        {metrics}""", char=' '*8)
+        self.finetune_actor()
 
-        input_sequence = dedent(f"""\
-        {("+"*10+os.linesep).join([
-            template_compressed.format(
-                n = i+1,
-                episode = self.episode_to_str(episodes[i], separators=(',', ':')),
-                metrics = json.dumps(metrics[i], 
-                                     cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits,
-                                     separators=(',', ':'), sort_keys=True, ensure_ascii=False, default=str)
-            ) for i in range(len(episodes))]
-            )}
+    def reflex(self, episode: Episode, idx:int):
+        metrics_dict = self.algorithm_config.metrics_statistics_fn(episode)
 
-        **Previous Policy:**
-        {self.policy_conclusion if self.policy_conclusion is not None else 'None'}
-
-        {self.algorithm_config.reflection_prompt}""", char=' '*8, plus_char='')
-
-        # We assume input sequence in reflection step never exceed max_tokens_input
-        # so we don't check token count here.
+        episode_metrics = "这是上面这个完整episode的性能指标统计值: \n\n" \
+                        + json.dumps(metrics_dict) + "\n\n"
         
-        self.logger.debug(input_sequence)
+        def window_indices(length, n):
+            i = 0
+            while i + n <= length:
+                yield (i, i + n)
+                i += n
+            if i < length:
+                yield (i, length)
 
-        content, _, reasoning_content, input_len, output_len = \
-            self.invoke_api(input_sequence, no_action=True)
+        for win_start, win_end in window_indices(len(episode), self.algorithm_config.reflex_batch):
 
-        # record in markdown
-        if self.algorithm_config.gen_markdown is not None:
-            reasoning_template = "<details>\n    <summary>Thinking:\
-                </summary>\n   {reasoning_content}\n</details>"
+            ep_start = episode[0:win_start]
+            ep_focus = episode[win_start:win_end]
+            ep_end = episode[win_end:]
 
-            markdown_template = dedent("""\
-            <details>
-                <summary>**Episode {n}:**</summary>
+            episode_start_str = self.episode_to_str(ep_start, separators=(',', ':')) + "\n" \
+                if len(ep_start) > 0 else ''
+            episode_focus_str = "<<<\n" + self.episode_to_str(ep_focus, separators=(',', ':')) + "\n>>>\n"
+            episode_end_str = self.episode_to_str(ep_end, separators=(',', ':')) + "\n" \
+                if len(ep_end) > 0 else ''
+            episode_str = episode_start_str + episode_focus_str + episode_end_str
+            the_episode = "下面是按时间顺序排列的一个episode中的完整步骤, 这一步主要关注用<<<< >>>包裹的片段Z:\n\n"\
+                        + episode_str \
+                        + "\n\n"
+        
+            input_sequence = self.reflex_template.format(
+                episode=the_episode,
+                episode_metrics=episode_metrics
+            )
 
-                {episode}
-            </details>
+            content, llm_reflex, reasoning_content, input_len, output_len = self.invoke_api(input_sequence, reflex=True)
+            
+            for idx, ref in enumerate(llm_reflex):
+                episode[win_start+idx]["transaction"]["reflex"] = ref
 
-            **Metrics for episode {n}**
-                {metrics}\n""",char=' '*12)
+            if self.algorithm_config.record_conversation:
+                it = self.progress_info["current_iteration"]
+                with open(
+                    f"{os.path.join(self.algorithm_config.record_conversation, self.name)}_reflex_iter{it}_ep{idx}_history.txt",
+                    'a'
+                ) as f:
+                    conversation = self.make_conversation(
+                        input_sequence, reasoning_content, content, "None", input_len, output_len
+                    )
+                    f.write(conversation)
 
-            record_str = dedent(f"""\
-            **User:**
-
-                {(os.linesep+"+"*10+os.linesep*2).join([
-                    markdown_template.format(
-                        n = i+1,
-                        episode = self.episode_to_str(episodes[i]),
-                        metrics = json.dumps(metrics[i], 
-                                            cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits, 
-                                            sort_keys=True, ensure_ascii=False, default=str)
-                    ) for i in range(len(episodes))
-                ])}
-
-            **Previous Policy:**
-            {self.policy_conclusion if self.policy_conclusion is not None else 'None'}
-
-            {self.algorithm_config.reflection_prompt}
-
-            **Model:**
-            {
-                reasoning_template.format(reasoning_content=reasoning_content)
-                if reasoning_content is not None else ' '
-            }
-
-            <details>
-                    <summary>Content:</summary>
-                    {content}
-            </details>
-
-            *Token usage <Input: {input_len} ; Output: {output_len}>*
-
-            ---\n""", char=' '*12)
-
-            with open(f"{os.path.join(self.algorithm_config.gen_markdown, self.name)}_rf_{self.status}_history.md", 'a') as f:
-                f.write(record_str)
-
-        self.policy_conclusion = content
+    def finetune_actor(self):
+        pass
 
     def post_train(self):
         """
@@ -310,6 +265,22 @@ class LLM(BaseAlgorithm):
                 self.mpi_architecture_config.group_comm.broadcast(self.policy_conclusion, root=0)
 
     # ----------------- LLM algorithm specific functions -----------------
+
+    def make_conversation(self, input_sequence, reasoning_content, content, expected_input_token_count, input_len, output_len):
+        conversation = "User:\n\n" \
+                    + input_sequence + "\n" \
+                    + "-"*50 + "\n"
+        if reasoning_content is not None:
+            conversation = conversation \
+                            + "Reasoning:\n\n" \
+                            + reasoning_content + "\n" \
+                            + "-"*50 + "\n"
+        conversation = conversation \
+                        + "Assistant:\n\n" \
+                        + content + "\n" \
+                        + "-"*50 + "\n" \
+                        + f"< expected input tokens: {expected_input_token_count}, input tokens: {input_len}, output tokens: {output_len} >\n" \
+                        + "<"*25 + ">"*25 + "\n"
     
     def replay_buffer_to_str(self, replay_buffer:ReplayBuffer, **kwargs):
         """
@@ -337,22 +308,16 @@ class LLM(BaseAlgorithm):
             transaction = self.algorithm_config.transaction_process_fn(episode[i]["transaction"])
             json_str = json.dumps(transaction, cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits, \
                                   sort_keys=True, ensure_ascii=False, default=str, **kwargs)
-            str_list.append(json_str+"\n")
+            str_list.append(json_str)
         return "\n".join(str_list)
 
-    def invoke_api(self, input_sequence:str, no_action=False):
+    def invoke_api(self, input_sequence:str, reflex=False):
         def inner():
-            messages = [
-                {
-                    "role": "system", "content": f"{self.algorithm_config.system_prompt}"
-                },
-                {
-                    "role": "user",
-                    "content": input_sequence
-                }
-            ]
-            if no_action:
-                return self.algorithm_config.reflection_invoke_fn(messages)
+            messages = [{"role": "system", "content": f"{self.system_prompt}"}] \
+                if self.algorithm_config.system_description_in_user == False else []
+            messages.append({"role": "user", "content": input_sequence})
+            if reflex:
+                return self.algorithm_config.reflex_invoke_fn(messages)
             else:
                 return self.algorithm_config.action_invoke_fn(messages)
         return inner()

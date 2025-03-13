@@ -1,15 +1,15 @@
 from mpi_rl import config
 config.use_mpi = False
 
-from .my_secret_keys import volcano_api_key, bailian_api_key # use your own API keys
+from .my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key # use your own API keys
+from .my_secret_keys import volcano_r1_name
 
 from mpi_rl.mpi_rl.algorithm.llm.llm_algo import LLM, LLMConfig
-from mpi_rl.mpi_rl.algorithm.llm.llm_utils import HuggingfaceTokenCounter, GeneralRequestInvoker, llm_action_filter, DoubleInvoker
+from mpi_rl.mpi_rl.algorithm.llm.llm_utils import HuggingfaceTokenCounter, GeneralRequestInvoker, json_filter, RoundRobinInvoker
 from mpi_rl.utils.config_helper import RolloutConfig
 from mpi_rl.utils.replay_buffer import ReplayBuffer, Episode, Transaction
 from mpi_rl.utils import Pipeline
 
-from textwrap import dedent
 from copy import deepcopy
 from pathlib import Path
 import os
@@ -30,115 +30,156 @@ def substract_6(llm_action):
     llm_action["action"] = llm_action["action"]-6
     return llm_action
 
-def get_policy(llm_action):
-    print(llm_action)
-    return llm_action["policy"]
+llm_action_filter_check = Pipeline(json_filter, check_action, substract_6)
 
-llm_action_filter_check = Pipeline(llm_action_filter, check_action, substract_6)
-llm_reflection_filter_check = Pipeline(llm_action_filter, get_policy)
-
-volcano_v3_reflection_api_invoker = GeneralRequestInvoker(
-    full_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-    API_key = volcano_api_key,
-    model_name="ep-20250212231007-4dm2m", # use your own endpoint
-    content_filter_fn=llm_reflection_filter_check
+ds_invoker_1 = GeneralRequestInvoker( # ds official
+    full_url="https://api.deepseek.com/v1/chat/completions",
+    model_name="deepseek-reasoner",
+    API_key=ds_api_key
 )
 
-volcano_distill_qwen_reflection_api_invoker = GeneralRequestInvoker(
-    full_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-    API_key = volcano_api_key,
-    model_name="ep-20250218021435-88j95", # use your own endpoint
-    content_filter_fn=llm_reflection_filter_check
+ds_invoker_2 = GeneralRequestInvoker( # volcano
+    full_url="https://ark.cn-beijing.volces.com/api/v3/",
+    model_name=volcano_r1_name,
+    API_key=volcano_api_key
 )
 
-bailian_v3_api_reflection_invoker = GeneralRequestInvoker(
+ds_invoker_3 = GeneralRequestInvoker( # bailian
     full_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-    API_key = bailian_api_key,
-    model_name="deepseek-v3",
-    content_filter_fn=llm_reflection_filter_check
+    model_name="deepseek-r1",
+    API_key=bailian_api_key
 )
 
-volcano_v3_action_api_invoker = GeneralRequestInvoker(
-    full_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-    API_key = volcano_api_key,
-    model_name="ep-20250212231007-4dm2m", # use your own endpoint
-    content_filter_fn = llm_action_filter_check
+reflex_invoker = RoundRobinInvoker(ds_invoker_1, ds_invoker_2, ds_invoker_3, weights=[4, 2, 1], try_round=2, sleep_btw_round=300)
+
+act_invoker = GeneralRequestInvoker(
+
 )
 
-volcano_distill_qwen_action_api_invoker = GeneralRequestInvoker(
-    full_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-    API_key = volcano_api_key,
-    model_name="ep-20250218021435-88j95", # use your own endpoint
-    content_filter_fn = llm_action_filter_check
-)
+qwen_counter = HuggingfaceTokenCounter(model_name="Qwen/Qwen2.5-7B", bias=5)
+deepseek_counter = HuggingfaceTokenCounter(model_name="deepseek-ai/DeepSeek-R1", bias=5)
 
-bailian_v3_api_action_invoker = GeneralRequestInvoker(
-    full_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-    API_key = bailian_api_key,
-    model_name="deepseek-v3",
-    content_filter_fn = llm_action_filter_check
-)
+system_desc = """\
+# 网络切片资源控制任务
 
-double_guarantee_action_invoker = DoubleInvoker(volcano_v3_action_api_invoker, bailian_v3_api_action_invoker)
-double_guarantee_reflection_invoker = DoubleInvoker(volcano_v3_reflection_api_invoker, bailian_v3_api_reflection_invoker)
+你作为RAN网络切片的智能控制器,通过动态调整资源分配(6-40的整数)优化以下三个目标：
+1.最小化SLA违约次数(权重最高)
+2.保持较高的频谱效率在, 理想为4-6之间(权重中等)
+3.减少资源调整次数(权重最低)
 
-huggingface_counter = HuggingfaceTokenCounter(model_name="deepseek-ai/DeepSeek-V3", bias=5)
+## 动作空间
 
-system_prompt = dedent("""
-    你作为RAN网络切片的智能无线电资源控制器,需要通过动态调整资源分配来优化网络性能。
+动作空间为6到40的整数, 代表为切片分配的资源数量, 数值越高代表分配的资源越多。
 
-    观测空间为长度为5的向量,写作O,含义为：
-    [当前资源分配, 当前频谱效率, 当前流量大小, 当前排队包变化量, 当前丢包量]
-                       
-    目标包括三个:
-    1.最大化频谱效率, 频谱效率最好能在4到6之间
-    2.最小化资源调整频率
-    3.最小化SLA违约次数
-    三个目标的优先级"最小化SLA违约次数">"最大化频谱效率">"最小化资源调整频率"
-                       
-    单步性能指标是长度为3的向量,写作M,含义为:
-    [频谱效率, 是否违反SLA, 资源数是否改变]
-    "是否违反SLA"和"资源数是否改变"用0与1表示,0代表没有违反SLA或者资源数没有改变,反之则违反了SLA或者资源数改变了。
-    刚开始时只提供一些观测,没有完整的历史信息。
-    性能指标与目标一一对应,即M[0]对应"最大化频谱效率",M[1]对应"最小化SLA违约次数",M[2]对应"最小化资源调整频率"。
+## 观测与指标规范
 
-    动作空间为6到40的整数,动作即为资源分配数,写作A。
-                       
-    角标"_t"代表当前时间步,"_{t+1}"代表下一个时间步,"_{t-1}"代表上一个时间步。
-                       
-    历史信息有多行,每一行为时间步t的完整信息,写作:
-    [O_t, A_t, M_{t+1}, 对O_t的分析(A_t的理由), 对A_{t-1}的反思(即上一行历史信息的分反思)]
-                       
-    每一完整Episode会有一个Episode级的性能指标,用于评估整个Episode的性能。
-    Episode级性能指标包括: 平均频谱效率, 总SLA违约次数, 总资源调整次数
+### 观测空间(O_t)
 
-    一些调整经验:
-    1.这三个目标是相互冲突的,频谱效率过高会导致SLA违约。为了不SLA违约,过于谨慎地过多分配资源的话频谱效率会很低。尽量减少资源调整次数的话,即在不合适的资源数上保持,会导致频谱效率低或者SLA违约。
-    2.在历史经验不足的情况下可以大胆探索,不要担心违反目标,大幅度增减(比如增减10左右)资源来探索环境。
-    3.在频谱效率不错且没有违反SLA的情况下,小幅度流量变化可以不变化资源以最小化资源调整次数
-    4.如果到资源调整到最低了还频谱效率很低,那也就保持最低。
-    5.频谱效率与流量和分配的资源有关,频谱效率和"流量"成正相关,与"当前资源分配"成负相关。
-    6.如果频谱效率很低,应该大幅度减少资源来提升频谱效率。
+[当前资源数, 当前频谱效率, 当前流量大小, 排队包变化量, 丢包量]
 
-    每次生成动作时要返回一个json给我,json结构为:
-    {
-    "prev_step_reflection": "反思之前一系列的动作做得好还是坏,原因是什么,反思在类似上一步的情况中,如何做到更好,让各个性能指标更佳",
-    "analysis": "为什么这样分配",
-    "action": int,
-    }
-                       
-    每次反思生成策略时要返回一个json给我,json结构为:
-    {
-    "analysis": "分析所给的Episode历史及性能指标,分析在这个Episode中,哪些动作做得好,哪些做得不好,如何做到更好,让各个性能指标更佳",
-    "policy": "详细地描述改进后的新策略,比如在什么情况下选择什么动作,如何选择动作.把你学到的东西总结为一个策略,让你的策略在未来的Episode中表现更好"                
-    }
-    """)
+### 性能指标(M_t)
+
+[频谱效率值, SLA违约标记(0/1), 资源变更标记(0/1)]
+
+性能指标与目标一一对应,即M[0]对应"最大化频谱效率",M[1]对应"最小化SLA违约次数",M[2]对应"最小化资源调整频率"。
+1代表SLA违约或者资源变更了。
+
+## 历史记录格式
+
+每行历史包含：
+[O_t, A_t, M_t, 即时分析, 上步反思]
+注: _t表示当前步, _{t±n}表示时间偏移。
+
+## 专家经验库
+
+1. 难点:
+   - 这三个目标是相互冲突的,频谱效率过高会导致SLA违约。为了不SLA违约,过于谨慎地过多分配资源的话频谱效率会很低。尽量减少资源调整次数的话,即在不合适的资源数上保持,会导致频谱效率低或者SLA违约。所以要总结经验, 以学会最合适的资源分配策略。
+
+2. 资源分配法则:
+   - 当频谱效率<4时: 大幅减少资源(Δ≥5)
+   - 频谱效率与流量和分配的资源有关,频谱效率和"流量"成正相关,与"当前资源分配"成负相关。
+
+3. 探索策略
+   - 在历史经验不足的情况下可以大胆探索,不要担心违反目标,大幅度增减(比如增减10左右)资源来探索环境。
+
+4. 异常处理:
+   - 资源已达下限仍低效：保持最低资源数。
+   
+"""
+
+act_prompt = """\
+根据以上信息自, 生成这一步的动作, 严格按照以下格式分析当前情况并生成动作:
+
+当前[是/不是]第一步
+
+{% if not first_step %}
+## 上一步反思
+
+上一步的情况为:
+- O_{t-1}: [值列表]
+- A_{t-1}: [整数]
+- M_{t-1}: [值列表] 
+分析要点：
+1. 根据M_t判断是否达成各目标
+2. 提出下一步改进方向
+
+(分析时, 主语用"这一步", 不要用"上一步")
+{% endif %}
+
+## 当前观测分析
+
+显示当前O_t: [值列表]
+分析逻辑链：
+1. 流量变化趋势
+2. 频谱效率状态
+3. SLA风险预测
+4. 资源调整必要性论证
+
+## 最终结果
+
+生成严格遵循此结构的JSON:
+{
+"prev_step_retrospection": [对上一步反思的总结], 
+"analysis": [对当前观测的分析],
+"action": [这一步决定采取的动作, 6-40的整数]
+}"""
+
+reflex_prompt = """\
+结合上面完整的episode信息, 逐条分析其中用<<<< >>>包裹的片段Z:
+
+先声明片段Z中一共有多少条历史
+
+然后对每一条历史执行:
+
+1. 声明这是Z中的第几条历史记录
+2. 重复这条历史记录的O, A和M
+3. 分析这条历史记录中的动作好坏, 有什么优点和缺陷
+4. 分析在这一步的O下, 是否需要换另一个动作来达到更好的效果
+5. 给出应该更换的动作
+
+然后输出最终的json格式化结果, 要严格按照下面格式, 严格按照Z中历史记录的顺序生成:
+
+[
+  {
+   "observation": [重复这一步的观测O]
+   "original_action": [重复这一步的动作A],
+   "retrospection": {
+     "advantage": [决策优点(若无可省略)],
+     "flaw": [主要缺陷分析(若无可省略)],
+     "suggested_action": [改进后的动作]
+   }
+  },
+  ...
+]
+
+retrospection.advantage和retrospection.flaw要尽可能第详细
+"""
 
 def metrics_statistics(ep:Episode):
     num_of_reconf = sum([t["transaction"]["info"]["changed_RB"] for t in ep])
     num_of_violation = sum([t["transaction"]["info"]["SLA_violation"] for t in ep])
     avg_SE = sum([t["transaction"]["info"]["SE"] for t in ep])/len(ep)
-    return {"num of reconfiguration": num_of_reconf, "num of SLA violation": num_of_violation, "average SE": avg_SE}
+    return {"num of total reconfiguration": num_of_reconf, "num of total SLA violation": num_of_violation, "average SE": avg_SE}
 
 def process_transaction(transaction: Transaction):
     obs = list(transaction["obs"][0:5])
@@ -146,24 +187,26 @@ def process_transaction(transaction: Transaction):
     metrics_SE = transaction["next_obs"][1]
     metrics_SLA = transaction["next_obs"][5]
     metrics_RB = transaction["next_obs"][6]
-    # analysis = transaction.get("analysis", "None")
-    # reflection = transaction.get("prev_step_reflection", "None")
-    # return [obs, action, [metrics_SE, metrics_SLA, metrics_RB], analysis, reflection]
-    return [obs, action, [metrics_SE, metrics_SLA, metrics_RB]]
+    analysis = transaction.get("analysis", "None")
+    reflection = transaction.get("prev_step_retrospection", "None")
+    return [obs, action, [metrics_SE, metrics_SLA, metrics_RB], analysis, reflection]
 
 def process_obs(obs):
     return list(obs[0:5])
 
 llm_config = LLMConfig(
-    system_prompt = system_prompt,
-    action_invoke_fn = double_guarantee_action_invoker,
-    reflection_invoke_fn = double_guarantee_reflection_invoker,
-    metrics_statistics_fn = metrics_statistics,
-    model_tokens_counter_fn = huggingface_counter,
-    max_tokens_input = 64000, # 64k tokens
-    gen_markdown = os.path.join(exp_folder, "markdowns"),
+    system_description=system_desc,
+    act_prompt=act_prompt,
+    reflex_prompt=reflex_prompt,
+    act_invoke_fn=act_invoker,
+    reflex_invoke_fn=reflex_invoker,
+    metrics_statistics_fn=metrics_statistics,
+    reflex_model_tokens_counter_fn=deepseek_counter,
+    act_model_tokens_counter_fn=qwen_counter,
+    reflex_max_tokens_input=64000, # 64k tokens
+    act_max_tokens_input=64000, # 64k tokens
     transaction_process_fn = process_transaction,
-    obs_process_fn = process_obs
+    obs_process_fn = process_obs,
 )
 
 episode_len = 300

@@ -11,15 +11,17 @@ class ActTemplate:
     def __init__(self, system_desc:str, act_prompt:str):
         self.template = """\
 {system_desc}
+{partial_episode}
 {obs}
 {act_prompt}""".format(
             system_desc = system_desc,
             act_prompt = act_prompt
         )
 
-    def format(self, obs:str) -> str:
+    def format(self, obs:str, partial_episode:str) -> str:
         return self.template.format(
-            obs = obs
+            obs = obs,
+            partial_episode = partial_episode
         )
 
 class ReflexTemplate:
@@ -27,12 +29,14 @@ class ReflexTemplate:
         self.template = """\
 {system_desc}
 {episode}
+{episode_metrics}
 {reflex_prompt}""".format(
             system_desc = system_desc,
             reflex_prompt = reflex_prompt
         )
 
-    def format(self, episode:str) -> str:
+    def format(self, episode:str, episode_metrics:str) -> str:
         return self.template.format(
-            episode = episode
+            episode = episode,
+            episode_metrics = episode_metrics
         )

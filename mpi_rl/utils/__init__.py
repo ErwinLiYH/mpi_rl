@@ -131,3 +131,7 @@ def Pipeline(*funcs):
     def pipeline_two(f, g):
         return lambda x: g(f(x))
     return reduce(pipeline_two, funcs, lambda x: x)
+
+def remove_first_line(s: str) -> str:
+    lines = s.splitlines(keepends=True)
+    return ''.join(lines[1:]) if len(lines) > 1 else ''
