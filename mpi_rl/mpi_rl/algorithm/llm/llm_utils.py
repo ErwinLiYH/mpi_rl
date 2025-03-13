@@ -1,6 +1,6 @@
 import requests
 import re
-from typing import Callable, Any
+from typing import Callable, Any, Optional, List
 import time
 
 # ------------------ Typing Alias ------------------
@@ -94,32 +94,45 @@ class GeneralRequestInvoker(BaseInvoker):
         
 class RoundRobinInvoker(BaseInvoker):
     """
-    Round robin invoker, invoke invokers in order.
+    Round robin invoker with weights, invoke invokers in order according to their weights.
     """
-    def __init__(self, *invokers:BaseInvoker, try_round:int = 1, sleep_btw_round:int = 0):
-        self.invokers = invokers
+    def __init__(self, *invokers: BaseInvoker, weights: Optional[List[int]] = None, try_round: int = 1, sleep_btw_round: int = 0):
+        self.original_invokers = invokers
+        if weights is None:
+            weights = [1] * len(invokers)
+        else:
+            if len(weights) != len(invokers):
+                raise ValueError("Length of weights must match the number of invokers")
+            if any(w <= 0 for w in weights):
+                raise ValueError("Weights must be positive integers")
+        self.weights = weights
+        self.invoker_indices = []
+        for i, weight in enumerate(weights):
+            self.invoker_indices.extend([i] * weight)
         self.index = 0
         self.try_round = try_round
         self.sleep_btw_round = sleep_btw_round
-        self.success_invoke_times = {f"invoker_{i}": 0 for i in range(len(self.invokers))}
-        self.fail_invoke_times = {f"invoker_{i}": 0 for i in range(len(self.invokers))}
-        self.last_exceptions = {f"invoker_{i}": None for i in range(len(self.invokers))}
+        num_original = len(self.original_invokers)
+        self.success_invoke_times = {f"invoker_{i}": 0 for i in range(num_original)}
+        self.fail_invoke_times = {f"invoker_{i}": 0 for i in range(num_original)}
+        self.last_exceptions = {f"invoker_{i}": None for i in range(num_original)}
 
-    def __call__(self, messages:MessagesT) -> Invoker_outputT:
+    def __call__(self, messages: MessagesT) -> Invoker_outputT:
         last_exception = None
         for r in range(self.try_round):
-            for _ in range(len(self.invokers)):
+            for _ in range(len(self.invoker_indices)):
                 current_index = self.index
-                invoker = self.invokers[current_index]
-                self.index = (current_index + 1) % len(self.invokers)
+                original_i = self.invoker_indices[current_index]
+                invoker = self.original_invokers[original_i]
+                self.index = (current_index + 1) % len(self.invoker_indices)
                 try:
                     res = invoker(messages)
-                    self.success_invoke_times[f"invoker_{current_index}"] += 1
+                    self.success_invoke_times[f"invoker_{original_i}"] += 1
                     return res
                 except Exception as e:
-                    self.fail_invoke_times[f"invoker_{current_index}"] += 1
+                    self.fail_invoke_times[f"invoker_{original_i}"] += 1
                     last_exception = e
-                    self.last_exceptions[f"invoker_{current_index}"] = e
+                    self.last_exceptions[f"invoker_{original_i}"] = e
             if r < self.try_round - 1:
                 # sleep except the last round
                 time.sleep(self.sleep_btw_round)
