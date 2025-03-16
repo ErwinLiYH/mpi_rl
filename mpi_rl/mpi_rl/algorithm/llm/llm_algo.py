@@ -24,8 +24,6 @@ from mpi_rl.utils import remove_first_line
 import json
 import os
 
-from tenacity import retry, stop_after_attempt
-
 # Typing Aliases
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Path_Without_NameT, MessagesT, \
     ContentT, Reasoning_ContentT, Num_Input_TokensT, Num_Output_TokensT, Input_SequenceT, Invoker_outputT
@@ -60,12 +58,16 @@ class LLMConfig(BaseAlgorithmConfig):
 
     def __post_init__(self):
         # model_tokens_counter_fn and max_tokens_input should be None together or not None together
-        assert (self.model_tokens_counter_fn is None and self.max_tokens_input is None) or \
-                (self.model_tokens_counter_fn is not None and self.max_tokens_input is not None), \
-                "model_tokens_counter_fn and max_tokens_input should be None together or not None together."
+        assert (self.act_model_tokens_counter_fn is None and self.act_max_tokens_input is None) or \
+                (self.act_model_tokens_counter_fn is not None and self.act_max_tokens_input is not None), \
+                "act_model_tokens_counter_fn and act_max_tokens_input should be None together or not None together."
         
-        if self.gen_markdown is not None:
-            os.makedirs(self.gen_markdown, exist_ok=True)
+        assert (self.reflex_model_tokens_counter_fn is None and self.reflex_max_tokens_input is None) or \
+                (self.reflex_model_tokens_counter_fn is not None and self.reflex_max_tokens_input is not None), \
+                "reflex_model_tokens_counter_fn and reflex_max_tokens_input should be None together or not None together."
+        
+        if self.record_conversation is not None:
+            os.makedirs(self.record_conversation, exist_ok=True)
 
 class LLM(BaseAlgorithm):
     """
