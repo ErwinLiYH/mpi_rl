@@ -12,7 +12,11 @@ authors = [
 license = { text = "MIT" }
 
 dependencies = [
-    "mpi4py"
+    "mpi4py",
+    "gymnasium",
+    "pettingzoo",
+    "torch",
+    "matplotlib"
 ]
 
 [tool.setuptools]
