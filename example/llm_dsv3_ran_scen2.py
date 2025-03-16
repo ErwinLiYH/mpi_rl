@@ -1,8 +1,8 @@
 from mpi_rl import config
 config.use_mpi = False
 
-from .my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key # use your own API keys
-from .my_secret_keys import volcano_r1_name
+from my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key # use your own API keys
+from my_secret_keys import volcano_r1_name
 
 from mpi_rl.mpi_rl.algorithm.llm.llm_algo import LLM, LLMConfig
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import HuggingfaceTokenCounter, GeneralRequestInvoker, json_filter, RoundRobinInvoker
@@ -15,7 +15,7 @@ from pathlib import Path
 import os
 
 from ransim_env.envs import scenario_two
-from .prj_utils import path_allocator
+from prj_utils import path_allocator
 
 
 exp_folder = path_allocator("exps/exp", "")
@@ -35,25 +35,30 @@ llm_action_filter_check = Pipeline(json_filter, check_action, substract_6)
 ds_invoker_1 = GeneralRequestInvoker( # ds official
     full_url="https://api.deepseek.com/v1/chat/completions",
     model_name="deepseek-reasoner",
-    API_key=ds_api_key
+    API_key=ds_api_key,
+    content_filter_fn=json_filter
 )
 
 ds_invoker_2 = GeneralRequestInvoker( # volcano
     full_url="https://ark.cn-beijing.volces.com/api/v3/",
     model_name=volcano_r1_name,
-    API_key=volcano_api_key
+    API_key=volcano_api_key,
+    content_filter_fn=json_filter
 )
 
 ds_invoker_3 = GeneralRequestInvoker( # bailian
     full_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     model_name="deepseek-r1",
-    API_key=bailian_api_key
+    API_key=bailian_api_key,
+    content_filter_fn=json_filter
 )
 
 reflex_invoker = RoundRobinInvoker(ds_invoker_1, ds_invoker_2, ds_invoker_3, weights=[4, 2, 1], try_round=2, sleep_btw_round=300)
 
 act_invoker = GeneralRequestInvoker(
-
+    full_url="localhost:9000/v1/chat/completions",
+    model_name="Qwen7B",
+    content_filter_fn=llm_action_filter_check
 )
 
 qwen_counter = HuggingfaceTokenCounter(model_name="Qwen/Qwen2.5-7B", bias=5)
@@ -254,5 +259,5 @@ llm_algo = LLM(
 
 llm_algo.logger.setLevel("INFO")
 
-for _ in range(10):
+for _ in range(2):
     llm_algo.train_iteration()
