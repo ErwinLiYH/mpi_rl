@@ -16,7 +16,7 @@ dependencies = [
     "gymnasium",
     "pettingzoo",
     "torch",
-    "matplotlib"
+    "matplotlib",
     "json5",
 ]
 
