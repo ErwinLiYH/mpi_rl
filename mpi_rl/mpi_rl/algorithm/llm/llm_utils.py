@@ -2,6 +2,7 @@ import requests
 import re
 from typing import Callable, Any, Optional, List
 import time
+import json5
 
 # ------------------ Typing Alias ------------------
 
@@ -203,12 +204,11 @@ class DummyTokenCounter(BaseTokenCounter):
 def json_filter(
         content:ContentT
         ):
-    from jsonc_parser.parser import JsoncParser
     matches = re.findall(r'\{.*\}', content, re.DOTALL)
     valid_json_list = []
     for match in matches:
-        valid_json_list.append(JsoncParser.parse_str(match))
+        valid_json_list.append(json5.loads(match))
     if len(valid_json_list) > 0:
-        return valid_json_list[0]
+        return valid_json_list[-1]
     else:
         raise ValueError(f"No valid json found in response: {content}")

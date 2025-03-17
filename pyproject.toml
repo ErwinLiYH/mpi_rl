@@ -17,6 +17,7 @@ dependencies = [
     "pettingzoo",
     "torch",
     "matplotlib"
+    "json5",
 ]
 
 [tool.setuptools]
