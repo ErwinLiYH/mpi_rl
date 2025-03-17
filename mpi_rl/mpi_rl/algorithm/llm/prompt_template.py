@@ -15,7 +15,9 @@ class ActTemplate:
 {obs}
 {act_prompt}""".format(
             system_desc = system_desc,
-            act_prompt = act_prompt
+            act_prompt = act_prompt,
+            obs = "{obs}",
+            partial_episode = "{partial_episode}"
         )
 
     def format(self, obs:str, partial_episode:str) -> str:
@@ -32,7 +34,9 @@ class ReflexTemplate:
 {episode_metrics}
 {reflex_prompt}""".format(
             system_desc = system_desc,
-            reflex_prompt = reflex_prompt
+            reflex_prompt = reflex_prompt,
+            episode = "{episode}",
+            episode_metrics = "{episode_metrics}"
         )
 
     def format(self, episode:str, episode_metrics:str) -> str:

@@ -36,7 +36,7 @@ class LLMConfig(BaseAlgorithmConfig):
     act_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     reflex_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     metrics_statistics_fn:Callable[[Episode], Any]
-    system_prompt: Optional[str] = None
+    system_prompt: str = ""
     system_description_in_user: bool = True
     eval_invoke_fn: Optional[Callable[[MessagesT], Invoker_outputT]] = None
     reflex_model_tokens_counter_fn: Callable[[Input_SequenceT],int] = None
@@ -114,7 +114,7 @@ class LLM(BaseAlgorithm):
         else:
             self.act_template = ActTemplate("", algorithm_config.act_prompt)
             self.reflex_template = ReflexTemplate("", algorithm_config.reflex_prompt)
-            if self.algorithm_config.system_prompt != None:
+            if self.algorithm_config.system_prompt != "" and isinstance(self.algorithm_config.system_prompt, str):
                 self.system_prompt = self.algorithm_config.system_prompt + "\n\n" + self.algorithm_config.system_description
             else:
                 self.system_prompt = self.algorithm_config.system_description
@@ -283,6 +283,7 @@ class LLM(BaseAlgorithm):
                         + "-"*50 + "\n" \
                         + f"< expected input tokens: {expected_input_token_count}, input tokens: {input_len}, output tokens: {output_len} >\n" \
                         + "<"*25 + ">"*25 + "\n"
+        return conversation
     
     def replay_buffer_to_str(self, replay_buffer:ReplayBuffer, **kwargs):
         """
@@ -321,7 +322,7 @@ class LLM(BaseAlgorithm):
             if reflex:
                 return self.algorithm_config.reflex_invoke_fn(messages)
             else:
-                return self.algorithm_config.action_invoke_fn(messages)
+                return self.algorithm_config.act_invoke_fn(messages)
         return inner()
 
 
