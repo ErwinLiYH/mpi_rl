@@ -212,3 +212,22 @@ def json_filter(
         return valid_json_list[-1]
     else:
         raise ValueError(f"No valid json found in response: {content}")
+    
+def code_filter(
+        content:ContentT
+        ):
+    matches = re.findall(r'```.*?```', content, re.DOTALL)
+    valid_code_list = []
+    for match in matches:
+        valid_code_list.append(match)
+    if len(valid_code_list) > 0:
+        return valid_code_list[-1]
+    else:
+        raise ValueError(f"No valid code block found in response: {content}")
+    
+def json_filter2(
+        content:ContentT
+        ):
+    content_r = content.replace("```json", "").replace("```", "")
+    data = json5.loads(content_r)
+    return data
