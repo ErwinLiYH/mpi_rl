@@ -129,7 +129,7 @@ class LLM(BaseAlgorithm):
             separators=(',', ':')
         ) if len(self.operating_episode) > 0 else 'None'
         
-        partial_episode = "下面是按顺序排列的历史步骤:\n(倒数第一行是前一步历史, 倒数第二行是钱两步历史, 以此类推)\n\n"\
+        partial_episode = "下面是按顺序排列的历史步骤:\n(倒数第一行是前一步历史, 倒数第二行是前两步历史, 以此类推)\n(如果为None则代表这是第一步,当前无历史记录)\n\n"\
                         + episode_str \
                         + "\n\n"
         
