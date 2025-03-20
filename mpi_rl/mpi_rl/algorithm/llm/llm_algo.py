@@ -55,6 +55,7 @@ class LLMConfig(BaseAlgorithmConfig):
     record_conversation: None|Path_Without_NameT = None
     max_history:int = 50
     reflex_batch:int = 5
+    reflex_specific_transaction_process_fn: Optional[Callable] = None
 
     def __post_init__(self):
         # model_tokens_counter_fn and max_tokens_input should be None together or not None together
@@ -216,11 +217,16 @@ class LLM(BaseAlgorithm):
             ep_focus = episode[win_start:win_end]
             ep_end = episode[win_end:]
 
-            episode_start_str = self.episode_to_str(ep_start, separators=(',', ':')) + "\n" \
-                if len(ep_start) > 0 else ''
-            episode_focus_str = "<<<\n" + self.episode_to_str(ep_focus, separators=(',', ':')) + "\n>>>\n"
-            episode_end_str = self.episode_to_str(ep_end, separators=(',', ':')) + "\n" \
-                if len(ep_end) > 0 else ''
+            process_fn = self.algorithm_config.reflex_specific_transaction_process_fn \
+                if self.algorithm_config.reflex_specific_transaction_process_fn is not None \
+                else self.algorithm_config.transaction_process_fn
+
+            episode_start_str = self.episode_to_str(ep_start, process_fn=process_fn, \
+                separators=(',', ':')) + "\n" if len(ep_start) > 0 else ''
+            episode_focus_str = "<<<\n" + self.episode_to_str(ep_focus, process_fn=process_fn, \
+                separators=(',', ':')) + "\n>>>\n"
+            episode_end_str = self.episode_to_str(ep_end, process_fn=process_fn, \
+                separators=(',', ':')) + "\n" if len(ep_end) > 0 else ''
             episode_str = episode_start_str + episode_focus_str + episode_end_str
             the_episode = "下面是按时间顺序排列的一个episode中的完整步骤, 这一步主要关注用<<<< >>>包裹的片段Z:\n\n"\
                         + episode_str \
@@ -285,14 +291,17 @@ class LLM(BaseAlgorithm):
                         + "<"*25 + ">"*25 + "\n"
         return conversation
     
-    def replay_buffer_to_str(self, replay_buffer:ReplayBuffer, **kwargs):
+    def replay_buffer_to_str(self, replay_buffer:ReplayBuffer, process_fn:Callable=None, **kwargs):
         """
         Concert the replay_buffer to a compressed string (to save space) for LLM.
         """
         str_list = []
         episode_index = 0
         for i in range(len(replay_buffer)):
-            transaction = self.algorithm_config.transaction_process_fn(replay_buffer[i]["transaction"])
+            if process_fn is None:
+                transaction = self.algorithm_config.transaction_process_fn(replay_buffer[i]["transaction"])
+            else:
+                transaction = process_fn(replay_buffer[i]["transaction"])
             index = replay_buffer[i]["episode_index"]
             if index == episode_index+1:
                 str_list.append("++++++++++\n")
@@ -302,13 +311,16 @@ class LLM(BaseAlgorithm):
             str_list.append(json_str+"\n")
         return "\n".join(str_list)
     
-    def episode_to_str(self, episode:Episode, **kwargs):
+    def episode_to_str(self, episode:Episode, process_fn:Callable=None, **kwargs):
         """
         Concert the episode to a compressed string (to save space) for LLM.
         """
         str_list = []
         for i in range(len(episode)):
-            transaction = self.algorithm_config.transaction_process_fn(episode[i]["transaction"])
+            if process_fn is None:
+                transaction = self.algorithm_config.transaction_process_fn(episode[i]["transaction"])
+            else:
+                transaction = process_fn(episode[i]["transaction"])
             json_str = json.dumps(transaction, cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits, \
                                   sort_keys=True, ensure_ascii=False, default=str, **kwargs)
             str_list.append(json_str)
