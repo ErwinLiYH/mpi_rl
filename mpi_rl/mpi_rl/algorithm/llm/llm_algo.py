@@ -253,8 +253,26 @@ class LLM(BaseAlgorithm):
                     )
                     f.write(conversation)
 
-    def finetune_actor(self):
-        pass
+    def build_finetune_conversation(self, episode:Episode):
+        for t in episode:
+            input_sequence = ...
+            
+            messages = [{"role": "system", "content": f"{self.system_prompt}"}] \
+                if self.algorithm_config.system_description_in_user == False else []
+            messages.append({"role": "user", "content": input_sequence})
+    
+    def finetune_actor(self, episodes: list[Episode]):
+        # make data for finetune
+        finetune_conversation = []
+        for ep in episodes:
+            finetune_conversation.extend(self.build_finetune_conversation(ep))
+        
+        # begin finetune
+        ## stop current model
+
+        ## finetune
+
+        ## start finetuned model
 
     def post_train(self):
         """
