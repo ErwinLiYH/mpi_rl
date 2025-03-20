@@ -3,6 +3,8 @@ from pettingzoo import ParallelEnv
 from pettingzoo import AECEnv
 import multiprocessing
 from functools import reduce
+import time
+from typing import Callable, Iterable, Type, Union, Any
 
 def get_env_type(env):
     if isinstance(env, gym.Env):
@@ -135,3 +137,33 @@ def Pipeline(*funcs):
 def remove_first_line(s: str) -> str:
     lines = s.splitlines(keepends=True)
     return ''.join(lines[1:]) if len(lines) > 1 else ''
+
+def advanced_retry(
+    fn: Callable,
+    max_attempts: int,
+    retry_interval: float,
+    retry_exceptions: Union[Type[Exception], Iterable[Type[Exception]]] = (Exception,),
+    *args: Any,
+    **kwargs: Any
+) -> Any:
+    if isinstance(retry_exceptions, type):
+        retry_exceptions = (retry_exceptions,)
+    elif not isinstance(retry_exceptions, tuple):
+        retry_exceptions = tuple(retry_exceptions)
+
+    last_exception: Union[Exception, None] = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn(*args, **kwargs)
+        except retry_exceptions as e:
+            last_exception = e
+            if attempt < max_attempts:
+                time.sleep(retry_interval)
+        except Exception as e:
+            raise e
+
+    if last_exception is not None:
+        raise last_exception
+    else:
+        raise RuntimeError("Unknown error")
