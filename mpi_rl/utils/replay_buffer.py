@@ -38,7 +38,7 @@ class Episode(list):
         super().__init__(*args, **kwargs)
 
     def insert_transaction(self, transaction):
-        if self.strict>0:
+        if self.strict>0 and len(self)>0:
             same_struct = same_structure_recursive(self[-1]["transaction"], transaction, self.strict)
             if not same_struct:
                 raise ValueError("The structure of the new transaction is different from the previous one.")
