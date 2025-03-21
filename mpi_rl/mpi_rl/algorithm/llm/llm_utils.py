@@ -43,7 +43,8 @@ class GeneralRequestInvoker(BaseInvoker):
             max_tokens: int = 8192,
             content_filter_fn: Callable[[ContentT], Any] = lambda x: None,
             rate_limit_code: int = 429,
-            timeout = 1800
+            timeout = 1800,
+            reasoning_key: str = "reasoning_content"
             ):
         self.full_url = full_url
         self.payload = {
@@ -70,6 +71,7 @@ class GeneralRequestInvoker(BaseInvoker):
         self.content_filter_fn = content_filter_fn
         self.rate_limit_code = rate_limit_code
         self.timeout = timeout
+        self.reasoning_key = reasoning_key
 
     def update_payload(self, **kwargs):
         self.payload.update(kwargs)
@@ -80,7 +82,7 @@ class GeneralRequestInvoker(BaseInvoker):
 
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"]
-            reasoning_content = response.json()["choices"][0]["message"].get("reasoning_content", None)
+            reasoning_content = response.json()["choices"][0]["message"].get(self.reasoning_key, None)
             num_input_tokens = response.json()["usage"]["prompt_tokens"]
             num_output_tokens = response.json()["usage"]["completion_tokens"]
             filtered_content = self.content_filter_fn(content)
