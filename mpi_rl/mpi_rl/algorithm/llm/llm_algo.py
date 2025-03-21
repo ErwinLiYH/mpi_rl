@@ -326,6 +326,7 @@ class LLM(BaseAlgorithm):
                 episode_index += 1
             json_str = json.dumps(transaction, cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits, \
                                   sort_keys=True, ensure_ascii=False, default=str, **kwargs)
+            json_str = f"Step {episode[i]["index_in_episode"]}: {json_str}"
             str_list.append(json_str+"\n")
         return "\n".join(str_list)
     
@@ -341,6 +342,7 @@ class LLM(BaseAlgorithm):
                 transaction = process_fn(episode[i]["transaction"])
             json_str = json.dumps(transaction, cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits, \
                                   sort_keys=True, ensure_ascii=False, default=str, **kwargs)
+            json_str = f"Step {episode[i]["index_in_episode"]}: {json_str}"
             str_list.append(json_str)
         return "\n".join(str_list)
 
