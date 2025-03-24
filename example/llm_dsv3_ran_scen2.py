@@ -1,7 +1,7 @@
 from mpi_rl import config
 config.use_mpi = False
 
-from my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key # use your own API keys
+from my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key, openrouter_api_key # use your own API keys
 from my_secret_keys import volcano_r1_name
 
 from mpi_rl.mpi_rl.algorithm.llm.llm_algo import LLM, LLMConfig
@@ -62,6 +62,26 @@ act_invoker = GeneralRequestInvoker(
     content_filter_fn=llm_action_filter_check
 )
 
+qwq32b_invoker_1 = GeneralRequestInvoker(
+    full_url="https://openrouter.ai/api/v1/chat/completions",
+    model_name="qwen/qwq-32b:free",
+    API_key=openrouter_api_key,
+    reasoning_key="reasoning",
+    content_filter_fn=llm_action_filter_check,
+    top_k=40,
+    top_p=0.95,
+    temperature=0.6,
+)
+
+qwq32b_invoker_2 = GeneralRequestInvoker(
+    full_url="http://localhost:9000/v1/chat/completions",
+    model_name="Qwen7B",
+    content_filter_fn=llm_action_filter_check,
+    top_k=40,
+    top_p=0.95,
+    temperature=0.6,
+)
+
 qwen_counter = HuggingfaceTokenCounter(model_name="Qwen/Qwen2.5-7B", bias=5)
 deepseek_counter = HuggingfaceTokenCounter(model_name="deepseek-ai/DeepSeek-R1", bias=5)
 
@@ -101,14 +121,15 @@ system_desc = """\
 1. 难点:
    - 这三个目标是相互冲突的,频谱效率过高会导致SLA违约。为了不SLA违约,过于谨慎地过多分配资源的话频谱效率会很低。尽量减少资源调整次数的话,即在不合适的资源数上保持,会导致频谱效率低或者SLA违约。所以要总结经验, 以学会最合适的资源分配策略。
 2. 资源分配经验:
-   - 当频谱效率小于4时: 大幅减少资源(大于5的资源数调整)
+   - 当频谱效率小于4时: 大幅减少资源
    - 频谱效率与流量和分配的资源有关,频谱效率和"流量"成正相关,与"当前资源分配"成负相关。
+   - 频谱效率和(流量/资源数)的比值成正比。
    - 当流量增大时,资源分配要增大。当流量减小时,资源分配要减小。
    - 频谱效率低时,为了提高频谱效率,资源分配要减小来提升频谱效率。当频谱效率高时,资源分配要增大以减小频谱效率。
    - 要结合流量大小和频谱效率来调整资源分配。
    - 资源分配要符合动作空间的范围,不要超出范围。
 3. 探索策略
-   - 在历史经验不足的情况下可以大胆探索,不要担心违反目标,大幅度增减(比如增减10以上)资源来探索环境。
+   - 在历史经验不足的情况下可以大胆探索,不要担心违反目标,大幅度增减资源来探索环境。
 4. 异常处理:
    - 如果资源已达下限6了,仍然频谱效率低：保持最低资源数,6。
     - 如果资源已达上限40了,仍然SLA违约：保持最高资源数,40。
@@ -227,7 +248,7 @@ llm_config = LLMConfig(
     system_description=system_desc,
     act_prompt=act_prompt,
     reflex_prompt=reflex_prompt,
-    act_invoke_fn=lambda x: advanced_retry(act_invoker, 5, 3, messages=x),
+    act_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_2, 5, 3, messages=x),
     reflex_invoke_fn=reflex_invoker,
     metrics_statistics_fn=metrics_statistics,
     reflex_model_tokens_counter_fn=deepseek_counter,
@@ -240,7 +261,7 @@ llm_config = LLMConfig(
     reflex_specific_transaction_process_fn=process_transaction_reflex
 )
 
-episode_len = 40
+episode_len = 300
 
 def train_env_scen2_creator():
     return scenario_two.ScenarioTwo(
