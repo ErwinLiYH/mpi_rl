@@ -167,3 +167,22 @@ def advanced_retry(
         raise last_exception
     else:
         raise RuntimeError("Unknown error")
+    
+class SpeedCalculator:
+    def __init__(self):
+        self.total_quantity = 0.0
+        self.total_time = 0.0
+
+    def add_data(self, quantity: float, time: float) -> None:
+        self.total_quantity += quantity
+        self.total_time += time
+
+    @property
+    def average_speed(self) -> float:
+        if self.total_time == 0:
+            return 0.0
+        return self.total_quantity / self.total_time
+
+    def __str__(self) -> str:
+        return f"{self.average_speed:.2f}"
+    

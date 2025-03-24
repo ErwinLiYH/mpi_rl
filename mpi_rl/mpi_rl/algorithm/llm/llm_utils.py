@@ -3,6 +3,7 @@ import re
 from typing import Callable, Any, Optional, List
 import time
 import json5
+from mpi_rl.utils import SpeedCalculator
 
 # ------------------ Typing Alias ------------------
 
@@ -76,9 +77,11 @@ class GeneralRequestInvoker(BaseInvoker):
     def update_payload(self, **kwargs):
         self.payload.update(kwargs)
 
-    def __call__(self, messages:MessagesT) -> Invoker_outputT:
+    def __call__(self, messages:MessagesT, avg_token_speed_calculator:SpeedCalculator=None) -> Invoker_outputT:
         self.payload["messages"] = messages
+        start_time = time.time()
         response = requests.request("POST", self.full_url, json=self.payload, headers=self.headers, timeout=self.timeout)
+        request_time = time.time() - start_time
 
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"]
@@ -86,6 +89,8 @@ class GeneralRequestInvoker(BaseInvoker):
             num_input_tokens = response.json()["usage"]["prompt_tokens"]
             num_output_tokens = response.json()["usage"]["completion_tokens"]
             filtered_content = self.content_filter_fn(content)
+            if avg_token_speed_calculator is not None:
+                avg_token_speed_calculator.add_data(num_output_tokens, request_time)
             return content, filtered_content, reasoning_content, num_input_tokens, num_output_tokens
         elif response.status_code == self.rate_limit_code:
             raise RateLimitError(f"Rate limit error: {response.text}")
