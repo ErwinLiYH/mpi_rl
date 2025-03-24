@@ -129,3 +129,4 @@ test/
 .vscode/
 my_secret_keys.py
 exps/
+set_ns_env.sh
