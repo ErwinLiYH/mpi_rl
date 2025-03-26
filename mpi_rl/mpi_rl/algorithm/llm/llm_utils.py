@@ -102,7 +102,8 @@ class RoundRobinInvoker(BaseInvoker):
     """
     Round robin invoker with weights, invoke invokers in order according to their weights.
     """
-    def __init__(self, *invokers: BaseInvoker, weights: Optional[List[int]] = None, try_round: int = 1, sleep_btw_round: int = 0):
+    def __init__(self, *invokers: BaseInvoker, weights: Optional[List[int]] = None, try_round: int = 1, sleep_btw_round: int = 0, logger=None):
+        self.logger = logger
         self.original_invokers = invokers
         if weights is None:
             weights = [1] * len(invokers)
@@ -123,7 +124,12 @@ class RoundRobinInvoker(BaseInvoker):
         self.fail_invoke_times = {f"invoker_{i}": 0 for i in range(num_original)}
         self.last_exceptions = {f"invoker_{i}": None for i in range(num_original)}
 
+    def log_info(self, message):
+        if self.logger is not None:
+            self.logger.info(message)
+
     def __call__(self, messages: MessagesT) -> Invoker_outputT:
+        self.log_info("Calling RoundRobinInvoker...")
         last_exception = None
         for r in range(self.try_round):
             for _ in range(len(self.invoker_indices)):
@@ -133,9 +139,11 @@ class RoundRobinInvoker(BaseInvoker):
                 self.index = (current_index + 1) % len(self.invoker_indices)
                 try:
                     res = invoker(messages)
+                    self.log_info(f"Invoker {original_i} success")
                     self.success_invoke_times[f"invoker_{original_i}"] += 1
                     return res
                 except Exception as e:
+                    self.log_info(f"Invoker {original_i} failed: {e}")
                     self.fail_invoke_times[f"invoker_{original_i}"] += 1
                     last_exception = e
                     self.last_exceptions[f"invoker_{original_i}"] = e
@@ -143,6 +151,10 @@ class RoundRobinInvoker(BaseInvoker):
                 # sleep except the last round
                 time.sleep(self.sleep_btw_round)
         if last_exception is not None:
+            self.log_info("All invokers failed")
+            self.log_info(f"Last exception: {last_exception}")
+            self.log_info(f"Success invoke times: {self.success_invoke_times}")
+            self.log_info(f"Fail invoke times: {self.fail_invoke_times}")
             raise last_exception
         else:
             raise RuntimeError("No invokers available")

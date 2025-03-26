@@ -17,10 +17,14 @@ import os
 from ransim_env.envs import scenario_two
 from prj_utils import path_allocator
 
+from Kkit import init_logger, PathJoin
+
 
 exp_folder = path_allocator("exps/exp", "")
 exp_folder = Path(exp_folder).resolve().as_posix()
 print("Experiment result path:", exp_folder)
+
+prj_path_join = PathJoin(exp_folder)
 
 def check_action(llm_action):
     assert llm_action["action"] in range(6, 41)
@@ -54,7 +58,9 @@ ds_invoker_3 = GeneralRequestInvoker( # bailian
     content_filter_fn=llm_reflex_filter_check
 )
 
-reflex_invoker = RoundRobinInvoker(ds_invoker_1, ds_invoker_2, ds_invoker_3, weights=[4, 2, 1], try_round=2, sleep_btw_round=300)
+roundrobin_logger = init_logger("roundrobin", prj_path_join("roundrobin.log"))
+
+reflex_invoker = RoundRobinInvoker(ds_invoker_1, ds_invoker_2, ds_invoker_3, weights=[4, 2, 1], try_round=2, sleep_btw_round=300, logger=roundrobin_logger)
 
 act_invoker = GeneralRequestInvoker(
     full_url="http://localhost:9000/v1/chat/completions",
