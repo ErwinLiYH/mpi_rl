@@ -137,7 +137,7 @@ class LLM(BaseAlgorithm):
                              round_digits=self.algorithm_config.round_digits, 
                              separators=(',', ':'), sort_keys=True, ensure_ascii=False, default=str)
         
-        obs = f"下面是 {self.progress_info['num_local_step']} 的观测:\n\n"\
+        obs = f"下面是 step {self.progress_info['num_local_step']} 的观测:\n\n"\
             + obs_str \
             + "\n\n"
 
