@@ -51,7 +51,7 @@ ds_invoker_1 = GeneralRequestInvoker( # ds official
 )
 
 ds_invoker_2 = GeneralRequestInvoker( # volcano
-    full_url="https://ark.cn-beijing.volces.com/api/v3/",
+    full_url="https://ark.cn-beijing.volces.com/api/v3/chat/completions",
     model_name=volcano_r1_name,
     API_key=volcano_api_key,
     content_filter_fn=llm_reflex_filter_check
