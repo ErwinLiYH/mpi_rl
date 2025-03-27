@@ -34,8 +34,14 @@ def substract_6(llm_action):
     llm_action["action"] = llm_action["action"]-6
     return llm_action
 
+reflex_batch = 5
+
+def check_reflex_length(reflex_action):
+    assert len(reflex_action) == reflex_batch
+    return reflex_action
+
 llm_action_filter_check = Pipeline(code_filter, json_filter2, check_action, substract_6)
-llm_reflex_filter_check = Pipeline(code_filter, json_filter2)
+llm_reflex_filter_check = Pipeline(code_filter, json_filter2, check_reflex_length)
 
 ds_invoker_1 = GeneralRequestInvoker( # ds official
     full_url="https://api.deepseek.com/v1/chat/completions",
@@ -60,7 +66,7 @@ ds_invoker_3 = GeneralRequestInvoker( # bailian
 
 roundrobin_logger = init_logger("roundrobin", prj_path_join("roundrobin.log"))
 
-reflex_invoker = RoundRobinInvoker(ds_invoker_1, ds_invoker_2, ds_invoker_3, weights=[4, 2, 1], try_round=2, sleep_btw_round=300, logger=roundrobin_logger)
+reflex_invoker = RoundRobinInvoker(ds_invoker_1, ds_invoker_2, ds_invoker_3, weights=[2, 1, 1], try_round=10, sleep_btw_round=300, logger=roundrobin_logger)
 
 act_invoker = GeneralRequestInvoker(
     full_url="http://localhost:9000/v1/chat/completions",
@@ -266,7 +272,8 @@ llm_config = LLMConfig(
     transaction_process_fn = process_transaction,
     obs_process_fn = process_obs,
     record_conversation = exp_folder,
-    reflex_specific_transaction_process_fn=process_transaction_reflex
+    reflex_specific_transaction_process_fn=process_transaction_reflex,
+    reflex_batch=reflex_batch
 )
 
 episode_len = 300
