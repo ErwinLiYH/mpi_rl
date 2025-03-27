@@ -241,8 +241,8 @@ class LLM(BaseAlgorithm):
 
             content, llm_reflex, reasoning_content, input_len, output_len = self.invoke_api(input_sequence, reflex=True)
             
-            for idx, ref in enumerate(llm_reflex):
-                episode[win_start+idx]["transaction"]["reflex"] = ref
+            for i, ref in enumerate(llm_reflex):
+                episode[win_start+i]["transaction"]["reflex"] = ref
 
             if self.algorithm_config.record_conversation:
                 it = self.progress_info["current_iteration"]
