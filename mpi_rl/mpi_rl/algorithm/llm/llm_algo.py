@@ -180,8 +180,7 @@ class LLM(BaseAlgorithm):
                 )
                 f.write(conversation)
         
-        if len(self.operating_episode) > 0:
-            self.operating_episode[-1]["transaction"]["per_step_reflection"] = llm_action["prev_step_reflection"]
+        self.operating_transaction.update("prev_step_reflection", llm_action["prev_step_reflection"])
         self.operating_transaction.update({"analysis": llm_action["analysis"]})
         self.operating_transaction.update({"content": content})
         self.operating_transaction.update({"reasoning_content": reasoning_content})

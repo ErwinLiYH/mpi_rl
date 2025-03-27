@@ -184,7 +184,7 @@ act_prompt = """\
 生成严格遵循此结构的JSON,并且动作要严格按照动作空间:
 ```json
 {{
-"prev_step_reflection": [对上一步反思的总结,主语用"这一步"], 
+"prev_step_reflection": [对上一步反思的总结], 
 "analysis": [对当前观测的分析],
 "action": [这一步决定采取的动作, 6-40的整数,不要超过这个区间]
 }}
