@@ -15,10 +15,10 @@ from dataclasses import dataclass
 
 from typing import Any, Callable, Optional
 
-from mpi_rl.utils.replay_buffer import Episode, ReplayBuffer
+from mpi_rl.utils.replay_buffer import Episode, ReplayBuffer, Transaction
 from mpi_rl.utils.config_helper import RolloutConfig
 
-from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate
+from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate, TeachTemplate
 from mpi_rl.utils import remove_first_line
 
 import json
@@ -26,23 +26,26 @@ import os
 
 # Typing Aliases
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Path_Without_NameT, MessagesT, \
-    ContentT, Reasoning_ContentT, Num_Input_TokensT, Num_Output_TokensT, Input_SequenceT, Invoker_outputT
+    Input_SequenceT, Invoker_outputT
 
 @dataclass
 class LLMConfig(BaseAlgorithmConfig):
     system_description: str
     act_prompt:str
     reflex_prompt:str
+    teach_prompt:str
     act_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     reflex_invoke_fn: Callable[[MessagesT], Invoker_outputT]
+    teach_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     metrics_statistics_fn:Callable[[Episode], Any]
     system_prompt: str = ""
     system_description_in_user: bool = True
-    eval_invoke_fn: Optional[Callable[[MessagesT], Invoker_outputT]] = None
-    reflex_model_tokens_counter_fn: Callable[[Input_SequenceT],int] = None
-    act_model_tokens_counter_fn: Callable[[Input_SequenceT],int] = None
+    teach_model_tokens_counter_fn: Optional[Callable[[Input_SequenceT],int]] = None
+    reflex_model_tokens_counter_fn: Optional[Callable[[Input_SequenceT],int]] = None
+    act_model_tokens_counter_fn: Optional[Callable[[Input_SequenceT],int]] = None
     reflex_max_tokens_input: int = None
     act_max_tokens_input: int = None
+    teach_max_tokens_input: int = None
     transaction_process_fn: Callable = lambda x: x     # A function to process the transaction before convert to json string,
                                                        # do 1.select the useful data, 2. convert the data type to basic type.
                                                        # Need convert numpy array or pytorch tensor to list to save space
@@ -56,6 +59,8 @@ class LLMConfig(BaseAlgorithmConfig):
     max_history:int = 50
     reflex_batch:int = 5
     reflex_specific_transaction_process_fn: Optional[Callable] = None
+    fine_tune_data_path: Optional[Path_Without_NameT] = None
+    action_process_fn:Callable = lambda x: x
 
     def __post_init__(self):
         # model_tokens_counter_fn and max_tokens_input should be None together or not None together
@@ -67,8 +72,15 @@ class LLMConfig(BaseAlgorithmConfig):
                 (self.reflex_model_tokens_counter_fn is not None and self.reflex_max_tokens_input is not None), \
                 "reflex_model_tokens_counter_fn and reflex_max_tokens_input should be None together or not None together."
         
+        assert (self.teach_model_tokens_counter_fn is None and self.teach_max_tokens_input is None) or \
+                (self.teach_model_tokens_counter_fn is not None and self.teach_max_tokens_input is not None), \
+                "teach_model_tokens_counter_fn and teach_max_tokens_input should be None together or not None together."
+        
         if self.record_conversation is not None:
             os.makedirs(self.record_conversation, exist_ok=True)
+
+        if self.fine_tune_data_path is not None:
+            os.makedirs(self.fine_tune_data_path, exist_ok=True)
 
 class LLM(BaseAlgorithm):
     """
@@ -111,10 +123,12 @@ class LLM(BaseAlgorithm):
         if self.algorithm_config.system_description_in_user:
             self.act_template = ActTemplate(algorithm_config.system_description, algorithm_config.act_prompt)
             self.reflex_template = ReflexTemplate(algorithm_config.system_description, algorithm_config.reflex_prompt)
+            self.teach_template = TeachTemplate(algorithm_config.system_description, algorithm_config.teach_prompt)
             self.system_prompt = self.algorithm_config.system_prompt
         else:
             self.act_template = ActTemplate("", algorithm_config.act_prompt)
             self.reflex_template = ReflexTemplate("", algorithm_config.reflex_prompt)
+            self.teach_template = TeachTemplate("", algorithm_config.teach_prompt)
             if self.algorithm_config.system_prompt != "" and isinstance(self.algorithm_config.system_prompt, str):
                 self.system_prompt = self.algorithm_config.system_prompt + "\n\n" + self.algorithm_config.system_description
             else:
@@ -180,12 +194,13 @@ class LLM(BaseAlgorithm):
                 )
                 f.write(conversation)
         
-        self.operating_transaction.update("prev_step_reflection", llm_action["prev_step_reflection"])
+        self.operating_transaction.update({"prev_step_reflection": llm_action["prev_step_reflection"]})
         self.operating_transaction.update({"analysis": llm_action["analysis"]})
         self.operating_transaction.update({"content": content})
         self.operating_transaction.update({"reasoning_content": reasoning_content})
+        self.operating_transaction.update({"input_sequence": input_sequence})
 
-        return llm_action["action"]
+        return self.algorithm_config.action_process_fn(llm_action["action"])
 
     def train(self, episodes: list[Episode]):
         self.temp_episodes_llm_algo_specific = episodes
@@ -193,8 +208,10 @@ class LLM(BaseAlgorithm):
         # so we store the episodes in a temporary variable and store them to replay_buffer in post_train
         # which will run on all ranks.
 
+        fine_tune_data_path_list = []
         for idx, ep in enumerate(episodes):
             self.reflex(ep, idx)
+            fine_tune_data_path_list.append(self.build_finetune_instruction(ep, idx))
 
         self.finetune_actor()
 
@@ -254,13 +271,98 @@ class LLM(BaseAlgorithm):
                     )
                     f.write(conversation)
 
-    def build_finetune_conversation(self, episode:Episode):
-        for t in episode:
-            input_sequence = ...
-            
-            messages = [{"role": "system", "content": f"{self.system_prompt}"}] \
-                if self.algorithm_config.system_description_in_user == False else []
-            messages.append({"role": "user", "content": input_sequence})
+    def build_finetune_instruction(self, episode:Episode, idx:int):
+        jsonl_list = []
+        for i, t in enumerate(episode):
+            original_action_analysis = {
+                "action": t["transaction"]["action"],
+                "analysis": t["transaction"]["analysis"],
+                "prev_step_reflection": t["transaction"]["prev_step_reflection"],
+            }
+            if t["transaction"]["reflex"]['reflection']["good"] == False:
+
+                # partial episode history
+                left_index = i - self.algorithm_config.max_history
+                partial_episode = episode[0:i+1] if left_index < 0 else episode[left_index:i+1]
+                episode_str = self.episode_to_str(
+                    partial_episode,
+                    separators=(',', ':')
+                ) if len(self.operating_episode) > 0 else 'None'
+                episode_str = "下面是按时间顺序排列的历史步骤:\n(如果为None则代表这是初始步,当前无历史记录)\n\n"\
+                            + episode_str + "\n" \
+                            + "\n"
+                
+                # reasoning content
+                reasoning = t["transaction"]["reasoning_content"]
+                reasoning_str = f"下面是 step {t['index_in_episode']} 中actor的思考过程：\n\n" \
+                            + reasoning + "\n" \
+                            + "\n"
+
+                # original action analysis
+                original_action_analysis_str = json.dumps(original_action_analysis, cls=IntFloatEncoder, \
+                    round_digits=self.algorithm_config.round_digits, sort_keys=True, ensure_ascii=False, default=str)
+                original_action_analysis_str = f"下面是 step {t['index_in_episode']} 中actor生成的原始动作：\n\n" \
+                                            + original_action_analysis_str + "\n" \
+                                            + "\n"
+                
+                # reflection
+                reflex = t["transaction"]["reflex"]
+                reflex_str = json.dumps(reflex, cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits, \
+                    sort_keys=True, ensure_ascii=False, default=str)
+                reflex_str = f"下面是reflector对 step {t['index_in_episode']} 的反思：\n\n" \
+                        + reflex_str + "\n" \
+                        + "\n"
+
+                # invoke API
+                input_sequence = self.teach_template.format(
+                    partial_episode=episode_str,
+                    reasoning_content=reasoning_str,
+                    original_action_analysis=original_action_analysis_str,
+                    reflection=reflex_str
+                )
+                content, llm_teach, reasoning_content, input_len, output_len = self.invoke_api(input_sequence, teach=True)
+
+                turning = [i for i in llm_teach if i["language"] == "text"][0]["code"]
+                new_action = [i for i in llm_teach if i["language"] == "json"][0]["code"]
+
+                # record conversation
+                if self.algorithm_config.record_conversation:
+                    it = self.progress_info["current_iteration"]
+                    with open(
+                        f"{os.path.join(self.algorithm_config.record_conversation, self.name)}_teach_iter{it}_ep{idx}_history.txt",
+                        'a'
+                    ) as f:
+                        conversation = self.make_conversation(
+                            input_sequence, reasoning_content, content, "None", input_len, output_len
+                        )
+                        f.write(conversation)
+
+                # build jsonl data
+                data = {
+                    "instruction":t["transaction"]["input_sequence"] ,
+                    "input": "",
+                    "output": f"<think>\n{t['transaction']['reasoning_content']}\n{turning}\n</think>\n{new_action}\n",
+                }
+
+                jsonl_list.append(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str))
+
+            else:
+                data = {
+                    "instruction":t["transaction"]["input_sequence"] ,
+                    "input": "",
+                    "output": f"<think>\n{t['transaction']['reasoning_content']}\n</think>\n{original_action_analysis}\n",
+                }
+
+                jsonl_list.append(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str))
+                
+        jsonl_str = "\n".join(jsonl_list)
+
+        # save jsonl data to file
+        it = self.progress_info["current_iteration"]
+        file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_finetune_iter{it}_{idx}.jsonl"
+        with open(file_name, 'w') as f:
+            f.write(jsonl_str)
+        return file_name
     
     def finetune_actor(self, episodes: list[Episode]):
         # make data for finetune
@@ -347,13 +449,15 @@ class LLM(BaseAlgorithm):
             str_list.append(json_str)
         return "\n".join(str_list)
 
-    def invoke_api(self, input_sequence:str, reflex=False):
+    def invoke_api(self, input_sequence:str, reflex=False, teach=False):
         def inner():
             messages = [{"role": "system", "content": f"{self.system_prompt}"}] \
                 if self.algorithm_config.system_description_in_user == False else []
             messages.append({"role": "user", "content": input_sequence})
             if reflex:
                 return self.algorithm_config.reflex_invoke_fn(messages)
+            elif teach:
+                return self.algorithm_config.teach_invoke_fn(messages)
             else:
                 return self.algorithm_config.act_invoke_fn(messages)
         return inner()

@@ -244,6 +244,24 @@ def code_filter(
     else:
         raise ValueError(f"No valid code block found in response: {content}")
     
+def code_filter_multi(
+        content:ContentT
+        ):
+    pattern = r'```([^\n`]*)\n([\s\S]*?)\n```'
+    matches = re.finditer(pattern, content)
+    result = []
+    for match in matches:
+        lang = match.group(1).strip() or None
+        code = match.group(2)
+        result.append({
+            'language': lang,
+            'code': code,
+        })
+    if len(result) > 0:
+        return result
+    else:
+        raise ValueError(f"No valid code block found in response: {content}")
+    
 def json_filter2(
         content:ContentT
         ):

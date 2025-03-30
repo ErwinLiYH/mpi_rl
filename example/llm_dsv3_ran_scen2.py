@@ -5,7 +5,14 @@ from my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key, openrou
 from my_secret_keys import volcano_r1_name
 
 from mpi_rl.mpi_rl.algorithm.llm.llm_algo import LLM, LLMConfig
-from mpi_rl.mpi_rl.algorithm.llm.llm_utils import HuggingfaceTokenCounter, GeneralRequestInvoker, RoundRobinInvoker, json_filter, code_filter, json_filter2
+from mpi_rl.mpi_rl.algorithm.llm.llm_utils import (
+        HuggingfaceTokenCounter, 
+        GeneralRequestInvoker, 
+        RoundRobinInvoker, 
+        code_filter_multi, 
+        code_filter, 
+        json_filter2
+    )
 from mpi_rl.utils.config_helper import RolloutConfig
 from mpi_rl.utils.replay_buffer import ReplayBuffer, Episode, Transaction
 from mpi_rl.utils import Pipeline, advanced_retry
@@ -39,8 +46,15 @@ def check_reflex_length(reflex_action):
     assert len(reflex_action) == reflex_batch
     return reflex_action
 
+def teach_check(teach_action):
+    assert len(teach_action) == 2
+    assert teach_action[0]["language"] == "text"  # these assertions are from the teach_prompt
+    assert teach_action[1]["language"] == "json"
+    return teach_action
+
 llm_action_filter_check = Pipeline(code_filter, json_filter2, check_action)
 llm_reflex_filter_check = Pipeline(code_filter, json_filter2, check_reflex_length)
+llm_teach_filter_check = Pipeline(code_filter_multi, teach_check)
 
 ds_invoker_1 = GeneralRequestInvoker( # ds official
     full_url="https://api.deepseek.com/v1/chat/completions",
@@ -88,6 +102,15 @@ qwq32b_invoker_2 = GeneralRequestInvoker(
     full_url="http://localhost:9000/v1/chat/completions",
     model_name="Qwen7B",
     content_filter_fn=llm_action_filter_check,
+    top_k=40,
+    top_p=0.95,
+    temperature=0.6,
+)
+
+qwq32b_invoker_3 = GeneralRequestInvoker(
+    full_url="http://localhost:9000/v1/chat/completions",
+    model_name="Qwen7B",
+    content_filter_fn=llm_teach_filter_check,
     top_k=40,
     top_p=0.95,
     temperature=0.6,
@@ -230,6 +253,22 @@ PS: 对每条历史反思时,都要结合整个Episode的信息,比如分析结�
 reflection.advantage和reflection.flaw要尽可能地详细
 """
 
+teach_prompt = """\
+你是teacher，你要结合reflector对这一步的反思和actor生成的原思考内容与动作结论，接着原来的思考内容生成一段转折，如“但是...所以应该...”，再生成新的动作，这段转折和新的动作要参照以下格式：
+
+```text
+对原思考过程续写的转折，值保留续写的转折，不要把原思考过程的内容在此重复
+```
+
+```json
+{
+"prev_step_reflection": [对上一步反思的总结，不是对原动作的反思，照抄原action里的prev_step_reflection就行了],
+"analysis": [对当前观测的分析],
+"action": [这一步决定采取的动作, 6-40的整数,不要超过这个区间]
+}
+```
+"""
+
 def metrics_statistics(ep:Episode):
     num_of_reconf = sum([t["transaction"]["info"]["changed_RB"] for t in ep])
     num_of_violation = sum([t["transaction"]["info"]["SLA_violation"] for t in ep])
@@ -261,8 +300,10 @@ llm_config = LLMConfig(
     system_description=system_desc,
     act_prompt=act_prompt,
     reflex_prompt=reflex_prompt,
+    teach_prompt=teach_prompt,
     act_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_2, 5, 3, messages=x),
-    reflex_invoke_fn=reflex_invoker,
+    reflex_invoke_fn=lambda x: advanced_retry(ds_invoker_3, 5, 60, messages=x),
+    teach_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_3, 5, 60, messages=x),
     metrics_statistics_fn=metrics_statistics,
     reflex_model_tokens_counter_fn=deepseek_counter,
     act_model_tokens_counter_fn=qwen_counter,
@@ -272,7 +313,8 @@ llm_config = LLMConfig(
     obs_process_fn = process_obs,
     record_conversation = exp_folder,
     reflex_specific_transaction_process_fn=process_transaction_reflex,
-    reflex_batch=reflex_batch
+    reflex_batch=reflex_batch,
+    fine_tune_data_path=prj_path_join("fine_tune_data"),
     action_process_fn=substract_6,
 )
 
