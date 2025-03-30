@@ -31,8 +31,7 @@ def check_action(llm_action):
     return llm_action
 
 def substract_6(llm_action):
-    llm_action["action"] = llm_action["action"]-6
-    return llm_action
+    return llm_action-6
 
 reflex_batch = 5
 
@@ -40,7 +39,7 @@ def check_reflex_length(reflex_action):
     assert len(reflex_action) == reflex_batch
     return reflex_action
 
-llm_action_filter_check = Pipeline(code_filter, json_filter2, check_action, substract_6)
+llm_action_filter_check = Pipeline(code_filter, json_filter2, check_action)
 llm_reflex_filter_check = Pipeline(code_filter, json_filter2, check_reflex_length)
 
 ds_invoker_1 = GeneralRequestInvoker( # ds official
@@ -274,6 +273,7 @@ llm_config = LLMConfig(
     record_conversation = exp_folder,
     reflex_specific_transaction_process_fn=process_transaction_reflex,
     reflex_batch=reflex_batch
+    action_process_fn=substract_6,
 )
 
 episode_len = 300
