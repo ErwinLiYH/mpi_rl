@@ -322,8 +322,8 @@ class LLM(BaseAlgorithm):
                 )
                 content, llm_teach, reasoning_content, input_len, output_len = self.invoke_api(input_sequence, teach=True)
 
-                turning = [i for i in llm_teach if i["language"] == "text"][0]["code"]
-                new_action = [i for i in llm_teach if i["language"] == "json"][0]["code"]
+                turning = [i for i in llm_teach if i["language"] == "text"][0]["text"]
+                new_action = [i for i in llm_teach if i["language"] == "json"][0]["text"]
 
                 # record conversation
                 if self.algorithm_config.record_conversation:

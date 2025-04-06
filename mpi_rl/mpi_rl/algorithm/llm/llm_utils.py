@@ -253,9 +253,11 @@ def code_filter_multi(
     for match in matches:
         lang = match.group(1).strip() or None
         code = match.group(2)
+        full = match.group(0)
         result.append({
             'language': lang,
             'code': code,
+            'text': full,
         })
     if len(result) > 0:
         return result
