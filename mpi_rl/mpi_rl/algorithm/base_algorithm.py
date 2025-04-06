@@ -196,6 +196,7 @@ class BaseAlgorithm:
                         obs, action, reward, next_obs, termination, truncation, info = \
                             self.transaction_process_fn(obs, action, reward, next_obs, termination, truncation, info)
                     collected_steps += 1
+                    self.progress_info["num_local_step"] += 1
                     self.operating_transaction.update(
                         obs=obs,
                         action=action,
@@ -238,6 +239,7 @@ class BaseAlgorithm:
             episodes.append(copy.deepcopy(self.operating_episode))
             self.operating_episode = Episode()   # refresh the operation episode
             collected_episodes += 1
+            self.progress_info["num_local_episodes"] += 1
 
             if self._current_rollout_config.count_by == "step":
                 if collected_steps >= self._current_rollout_config.num_of_step:
@@ -245,10 +247,6 @@ class BaseAlgorithm:
             elif self._current_rollout_config.count_by == "episode":
                 if collected_episodes == self._current_rollout_config.num_of_episode:
                     break
-        
-        # update local progress info
-        self.progress_info["num_local_episodes"] += collected_episodes
-        self.progress_info["num_local_step"] += collected_steps
 
         # update global progress info
         if self.mpi_architecture_config is not None:
