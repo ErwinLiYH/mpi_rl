@@ -282,7 +282,7 @@ def process_transaction(transaction: Transaction):
     metrics_SLA = transaction["next_obs"][5]
     metrics_RB = transaction["next_obs"][6]
     analysis = transaction.get("analysis", "None")
-    reflection = transaction.get("pre_step_reflection", "None")
+    reflection = transaction.get("prev_step_reflection", "None")
     return [obs, action, [metrics_SE, metrics_SLA, metrics_RB], analysis, reflection]
 
 def process_transaction_reflex(transaction: Transaction):
