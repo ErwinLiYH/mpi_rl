@@ -60,7 +60,7 @@ class LLMConfig(BaseAlgorithmConfig):
     reflex_batch:int = 5
     reflex_specific_transaction_process_fn: Optional[Callable] = None
     fine_tune_data_path: Optional[Path_Without_NameT] = None
-    action_process_fn:Callable = lambda x: x
+    action_offset:float = 0
 
     def __post_init__(self):
         # model_tokens_counter_fn and max_tokens_input should be None together or not None together
@@ -275,7 +275,7 @@ class LLM(BaseAlgorithm):
         jsonl_list = []
         for i, t in enumerate(episode):
             original_action_analysis = {
-                "action": t["transaction"]["action"],
+                "action": t["transaction"]["action"]-self.algorithm_config.action_offset,
                 "analysis": t["transaction"]["analysis"],
                 "prev_step_reflection": t["transaction"]["prev_step_reflection"],
             }

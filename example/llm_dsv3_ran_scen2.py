@@ -37,9 +37,6 @@ def check_action(llm_action):
     assert llm_action["action"] in range(6, 41)
     return llm_action
 
-def substract_6(llm_action):
-    return llm_action-6
-
 reflex_batch = 5
 
 def check_reflex_length(reflex_action):
@@ -318,7 +315,7 @@ llm_config = LLMConfig(
     reflex_specific_transaction_process_fn=process_transaction_reflex,
     reflex_batch=reflex_batch,
     fine_tune_data_path=prj_path_join("fine_tune_data"),
-    action_process_fn=substract_6,
+    action_offset=-6,
 )
 
 episode_len = 300
