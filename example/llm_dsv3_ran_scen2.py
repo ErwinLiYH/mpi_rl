@@ -62,6 +62,7 @@ ds_invoker_1 = GeneralRequestInvoker( # ds official
     API_key=ds_api_key,
     content_filter_fn=llm_reflex_filter_check
 )
+ds_invoker_1_retry = lambda x: advanced_retry(ds_invoker_1, 5, 60, messages=x)
 
 ds_invoker_2 = GeneralRequestInvoker( # volcano
     full_url="https://ark.cn-beijing.volces.com/api/v3/chat/completions",
@@ -69,6 +70,7 @@ ds_invoker_2 = GeneralRequestInvoker( # volcano
     API_key=volcano_api_key,
     content_filter_fn=llm_reflex_filter_check
 )
+ds_invoker_2_retry = lambda x: advanced_retry(ds_invoker_2, 5, 60, messages=x)
 
 ds_invoker_3 = GeneralRequestInvoker( # bailian
     full_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -76,10 +78,11 @@ ds_invoker_3 = GeneralRequestInvoker( # bailian
     API_key=bailian_api_key,
     content_filter_fn=llm_reflex_filter_check
 )
+ds_invoker_3_retry = lambda x: advanced_retry(ds_invoker_3, 5, 60, messages=x)
 
 roundrobin_logger = init_logger("roundrobin", prj_path_join("roundrobin.log"))
 
-reflex_invoker = RoundRobinInvoker(ds_invoker_1, ds_invoker_2, ds_invoker_3, weights=[2, 1, 1], try_round=10, sleep_btw_round=300, logger=roundrobin_logger)
+reflex_invoker = RoundRobinInvoker(ds_invoker_1_retry, ds_invoker_2_retry, ds_invoker_3_retry, weights=[1, 1, 4], try_round=10, sleep_btw_round=300, logger=roundrobin_logger)
 
 act_invoker = GeneralRequestInvoker(
     full_url="http://localhost:9000/v1/chat/completions",
@@ -302,8 +305,8 @@ llm_config = LLMConfig(
     reflex_prompt=reflex_prompt,
     teach_prompt=teach_prompt,
     act_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_2, 5, 3, messages=x),
-    reflex_invoke_fn=lambda x: advanced_retry(ds_invoker_3, 5, 60, messages=x),
-    teach_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_3, 5, 60, messages=x),
+    reflex_invoke_fn=reflex_invoker,
+    teach_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_3, 5, 3, messages=x),
     metrics_statistics_fn=metrics_statistics,
     reflex_model_tokens_counter_fn=deepseek_counter,
     act_model_tokens_counter_fn=qwen_counter,
