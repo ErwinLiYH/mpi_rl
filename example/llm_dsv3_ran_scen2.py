@@ -99,8 +99,8 @@ qwq32b_invoker_1 = GeneralRequestInvoker(
 )
 
 qwq32b_invoker_2 = GeneralRequestInvoker(
-    full_url="http://localhost:9000/v1/chat/completions",
-    model_name="Qwen7B",
+    full_url="http://localhost:9001/v1/chat/completions",
+    model_name="Qwen7B1",
     content_filter_fn=llm_action_filter_check,
     top_k=40,
     top_p=0.95,
@@ -108,9 +108,18 @@ qwq32b_invoker_2 = GeneralRequestInvoker(
 )
 
 qwq32b_invoker_3 = GeneralRequestInvoker(
-    full_url="http://localhost:9000/v1/chat/completions",
-    model_name="Qwen7B",
+    full_url="http://localhost:9001/v1/chat/completions",
+    model_name="Qwen7B1",
     content_filter_fn=llm_teach_filter_check,
+    top_k=40,
+    top_p=0.95,
+    temperature=0.6,
+)
+
+qwq32b_invoker_4 = GeneralRequestInvoker(
+    full_url="http://localhost:9001/v1/chat/completions",
+    model_name="Qwen7B1",
+    content_filter_fn=llm_reflex_filter_check,
     top_k=40,
     top_p=0.95,
     temperature=0.6,
@@ -126,7 +135,7 @@ system_desc = """\
 
 在RAN网络切片的资源分配任务中,Actor需要通过动态调整资源分配(6-40的整数)优化以下三个目标：
 1.最小化SLA违约次数(权重最高)
-2.保持较高的频谱效率在, 理想为5-6之间(权重中等)
+2.保持较高的频谱效率在, 理想为4.5-6.5之间(权重中等)
 3.减少资源调整次数(权重最低)
 
 ## 动作空间
@@ -157,18 +166,17 @@ system_desc = """\
 1. 难点:
    - 这三个目标是相互冲突的,频谱效率过高会导致SLA违约。为了不SLA违约,过于谨慎地过多分配资源的话频谱效率会很低。尽量减少资源调整次数的话,即在不合适的资源数上保持,会导致频谱效率低或者SLA违约。所以要总结经验, 以学会最合适的资源分配策略。
 2. 资源分配经验:
-   - 当频谱效率小于4时: 大幅减少资源
    - 频谱效率与流量和分配的资源有关,频谱效率和"流量"成正相关,与"当前资源分配"成负相关。
    - 频谱效率和(流量/资源数)的比值成正比。
-   - 当流量增大时,资源分配要增大。当流量减小时,资源分配要减小。
-   - 频谱效率过低时,为了提高频谱效率,资源分配要减小来提升频谱效率。当频谱效率过高时,资源分配要增大以减小频谱效率。
-   - 要结合流量大小和频谱效率来调整资源分配。
    - 资源分配要符合动作空间的范围,不要超出范围。
+   - 尽量少调整资源，减少资源调整次数，但是要保证频谱效率和SLA违约次数都在合理范围内。
+   - 不必在意频谱效率是否在理想范围的正中间，而且略微超出范围也可以接受。
 3. 探索策略
    - 在历史经验不足的情况下可以大胆探索,不要担心违反目标,大幅度增减资源来探索环境。
 4. 异常处理:
    - 如果资源已达下限6了,仍然频谱效率低：保持最低资源数,6。
-    - 如果资源已达上限40了,仍然SLA违约：保持最高资源数,40。
+   - 如果资源已达上限40了,仍然SLA违约：保持最高资源数,40。
+   - 系统有时会因为干扰而SLA违约，发现SLA违约时要根据以往的经验来判断是否是资源不够导致的，还是系统本身的干扰导致的。如果是干扰导致的SLA违约,则不需要调整资源数。
 """
 
 act_prompt = """\
@@ -219,14 +227,15 @@ reflex_prompt = """\
 
 然后对每一条历史执行:
 
-1. 声明这是Z中的第几条历史记录
-2. 重复这条历史记录的O, A和M
-3. 结合完整Episode的信息,分析完整Episode的流量变化趋势,流量是否在某一区间波动,在某一步大幅度减小或者增大
-4. 分析在这一步的情况下流量变化趋势, 频谱效率状态, SLA风险预测, 资源调整必要性
-5. 分析这条历史记录中的动作好坏, 有什么优点和缺陷
-6. 分析在这一步的O下, 是否需要换另一个动作来达到更好的效果
-7. 分析这一步相对上一步是否要改变资源分配,增大还是减小,或者保持不变
-8. 给出应该更换的动作
+- 声明这是Z中的第几条历史记录
+- 重复这条历史记录的O, A和M
+- 如果这一步的M都达到了目标，则不用分析后续的内容了
+- 结合完整Episode的信息,分析完整Episode的流量变化趋势,流量是否在某一区间波动,在某一步大幅度减小或者增大
+- 分析在这一步的情况下流量变化趋势, 频谱效率状态, SLA风险预测, 资源调整必要性
+- 分析这条历史记录中的动作好坏, 有什么优点和缺陷
+- 分析在这一步的O下, 是否需要换另一个动作来达到更好的效果
+- 分析这一步相对上一步是否要改变资源分配,增大还是减小,或者保持不变
+- 给出应该更换的动作
 
 PS: 对每条历史反思时,都要结合整个Episode的信息,比如分析结合前后的流量变化趋势,分析是否可以让前后的资源分配都保持一致并且不会SLA违约且频谱效率高
     每行历史为[O_t, A_t, M_t],没有即时分析和上步反思,只有基础的历史记录
@@ -238,11 +247,12 @@ PS: 对每条历史反思时,都要结合整个Episode的信息,比如分析结�
   {{
    "observation": [重复这一步的观测O]
    "original_action": [重复这一步的动作A],
+   "original_metrics": [重复这一步的指标M],
    "reflection": {{
      "good": [是否是足够好的动作,布尔值,True/False],
-     "analysis": [分析在这一步的情况下流量变化趋势, 频谱效率状态, SLA风险预测, 资源调整必要性],
-     "advantage": [决策优点(若无可省略)],
-     "flaw": [主要缺陷分析(若无可省略)],
+     "analysis": [分析在这一步的情况下流量变化趋势, 频谱效率状态, SLA风险预测, 资源调整必要性以及如何调整资源（若无可省略为None）],
+     "advantage": [决策优点（若无可省略为None）],
+     "flaw": [主要缺陷分析（若无可省略为None）],
      "suggested_action": [改进后的动作]
    }}
   }},
@@ -250,6 +260,7 @@ PS: 对每条历史反思时,都要结合整个Episode的信息,比如分析结�
 ]
 ```
 
+如果这一步的M都达成了目标reflection中的good为True, 其他字段都写字符串None
 reflection.advantage和reflection.flaw要尽可能地详细
 """
 
@@ -302,7 +313,7 @@ llm_config = LLMConfig(
     reflex_prompt=reflex_prompt,
     teach_prompt=teach_prompt,
     act_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_2, 5, 3, messages=x),
-    reflex_invoke_fn=reflex_invoker,
+    reflex_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_4, 5, 3, messages=x),
     teach_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_3, 5, 3, messages=x),
     metrics_statistics_fn=metrics_statistics,
     reflex_model_tokens_counter_fn=deepseek_counter,
@@ -363,5 +374,5 @@ llm_algo = LLM(
 
 llm_algo.logger.setLevel("INFO")
 
-for _ in range(2):
+for _ in range(1):
     llm_algo.train_iteration()
