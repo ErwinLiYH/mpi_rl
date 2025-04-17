@@ -211,6 +211,7 @@ class LLM(BaseAlgorithm):
         fine_tune_data_path_list = []
         for idx, ep in enumerate(episodes):
             self.reflex(ep, idx)
+            self.teach(ep, idx)
             fine_tune_data_path_list.append(self.build_finetune_instruction(ep, idx))
 
         # TODO: move this to post train
@@ -280,8 +281,7 @@ class LLM(BaseAlgorithm):
                     )
                     f.write(conversation)
 
-    def build_finetune_instruction(self, episode:Episode, idx:int):
-        jsonl_list = []
+    def teach(self, episode:Episode, idx:int):
         for i, t in enumerate(episode):
             original_action_analysis = {
                 "action": t["transaction"]["action"]-self.algorithm_config.action_offset,
@@ -348,33 +348,39 @@ class LLM(BaseAlgorithm):
                             input_sequence, reasoning_content, content, "None", input_len, output_len
                         )
                         f.write(conversation)
-
-                # build jsonl data
+    
+    def build_finetune_instruction(self, episode: Episode, idx:int):
+        jsonl_list = []
+        for t in episode:
+            if t["transaction"]["reflex"]['reflection']["good"] == False:
+                turning = t["transaction"]["turning"]
+                new_action = t["transaction"]["new_action"]
                 data = {
                     "instruction":t["transaction"]["input_sequence"] ,
                     "input": "",
                     "output": f"<think>\n{t['transaction']['reasoning_content']}\n{turning}\n</think>\n{new_action}\n",
                 }
-
-                jsonl_list.append(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str))
-
             else:
+                original_action_analysis = {
+                    "action": t["transaction"]["action"]-self.algorithm_config.action_offset,
+                    "analysis": t["transaction"]["analysis"],
+                    "prev_step_reflection": t["transaction"]["prev_step_reflection"],
+                }
                 data = {
                     "instruction":t["transaction"]["input_sequence"] ,
                     "input": "",
                     "output": f"<think>\n{t['transaction']['reasoning_content']}\n</think>\n{original_action_analysis}\n",
                 }
+            data["step"] = t["index_in_episode"]
+            jsonl_list.append(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str, indent=4))
+            jsonl_str = "\n".join(jsonl_list)
 
-                jsonl_list.append(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str))
-                
-        jsonl_str = "\n".join(jsonl_list)
-
-        # save jsonl data to file
-        it = self.progress_info["current_iteration"]
-        file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_finetune_iter{it}_{idx}.jsonl"
-        with open(file_name, 'w') as f:
-            f.write(jsonl_str)
-        return file_name
+            # save jsonl data to file
+            it = self.progress_info["current_iteration"]
+            file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_finetune_iter{it}_{idx}.jsonl"
+            with open(file_name, 'w') as f:
+                f.write(jsonl_str)
+            return file_name
     
     def finetune_actor(self, episodes: list[Episode]):
         # make data for finetune
