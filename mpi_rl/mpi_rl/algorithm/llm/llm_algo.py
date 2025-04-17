@@ -213,6 +213,15 @@ class LLM(BaseAlgorithm):
             self.reflex(ep, idx)
             fine_tune_data_path_list.append(self.build_finetune_instruction(ep, idx))
 
+        # TODO: move this to post train
+        # save episodes for test
+        import pickle
+        with open(
+            os.path.join(self.algorithm_config.record_conversation, f"episodes_{self.progress_info['current_iteration']}.pkl"),
+            'wb'
+        ) as f:
+            pickle.dump(episodes, f)
+
         self.finetune_actor()
 
     def reflex(self, episode: Episode, idx:int):
