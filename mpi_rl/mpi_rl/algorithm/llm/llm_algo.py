@@ -200,7 +200,7 @@ class LLM(BaseAlgorithm):
         self.operating_transaction.update({"reasoning_content": reasoning_content})
         self.operating_transaction.update({"input_sequence": input_sequence})
 
-        return self.algorithm_config.action_process_fn(llm_action["action"])
+        return llm_action["action"] + self.algorithm_config.action_offset
 
     def train(self, episodes: list[Episode]):
         self.temp_episodes_llm_algo_specific = episodes
