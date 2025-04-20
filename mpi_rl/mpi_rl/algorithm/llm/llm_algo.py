@@ -331,6 +331,8 @@ class LLM(BaseAlgorithm):
                 )
                 content, llm_teach, reasoning_content, input_len, output_len = self.invoke_api(input_sequence, teach=True)
 
+                self.logger.info(f"Teach - Step {t['index_in_episode']}")
+
                 turning = [j for j in llm_teach if j["language"] == "text"][0]["code"]
                 new_action = [j for j in llm_teach if j["language"] == "json"][0]["text"]
 
