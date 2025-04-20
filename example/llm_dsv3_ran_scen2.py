@@ -34,19 +34,20 @@ print("Experiment result path:", exp_folder)
 prj_path_join = PathJoin(exp_folder)
 
 def check_action(llm_action):
-    assert llm_action["action"] in range(6, 41)
+    assert llm_action["action"] in range(6, 41), f"action should be in range(6, 41)\n{llm_action}"
     return llm_action
 
 reflex_batch = 5
 
 def check_reflex_length(reflex_action):
-    assert len(reflex_action) == reflex_batch
+    assert len(reflex_action) == reflex_batch, f"reflex_action should have {reflex_batch} elements\n{reflex_action}"
     return reflex_action
 
 def teach_check(teach_action):
-    assert len(teach_action) == 2
-    assert teach_action[0]["language"] == "text"  # these assertions are from the teach_prompt
-    assert teach_action[1]["language"] == "json"
+    assert len(teach_action) == 2, f"teach_action should have 2 elements\n{teach_action}"
+    # these assertions are from the teach_prompt
+    assert teach_action[0]["language"] == "text", f"teach_action[0] should be text\n{teach_action[0]}"
+    assert teach_action[1]["language"] == "json", f"teach_action[1] should be json\n{teach_action[1]}"
     return teach_action
 
 llm_action_filter_check = Pipeline(code_filter, json_filter2, check_action)
