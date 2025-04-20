@@ -187,10 +187,7 @@ class BaseAlgorithm:
             if self.env_type in ["pzp", "gym"]:
                 while True:  # step loop
                     action = self.compute_action(obs)
-                    if self.mpi_architecture_config is not None:
-                        self.logger.info(f"Rank {self.mpi_architecture_config.group_rank} - Group {self.mpi_architecture_config.group} - Act - Step {collected_steps} - State {self.status} - Action: {action}")
-                    else:
-                        self.logger.info(f"Act - Step {collected_steps} - {self.status} - Action: {action}")
+                    self.logger.info(f"Act - Step {collected_steps} - {self.status} - Action: {action}")
                     next_obs, reward, termination, truncation, info = self._env.step(action)
                     if self.transaction_process_fn is not None:
                         obs, action, reward, next_obs, termination, truncation, info = \

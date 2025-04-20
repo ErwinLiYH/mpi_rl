@@ -266,6 +266,8 @@ class LLM(BaseAlgorithm):
             )
 
             content, llm_reflex, reasoning_content, input_len, output_len = self.invoke_api(input_sequence, reflex=True)
+
+            self.logger.info(f"Reflex - Episode {idx} - Step {win_start} to {win_end}")
             
             for i, ref in enumerate(llm_reflex):
                 episode[win_start+i]["transaction"]["reflex"] = ref
