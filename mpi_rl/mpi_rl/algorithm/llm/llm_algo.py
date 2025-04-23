@@ -366,9 +366,9 @@ class LLM(BaseAlgorithm):
                 }
             else:
                 original_action_analysis = {
-                    "action": t["transaction"]["action"]-self.algorithm_config.action_offset,
-                    "analysis": t["transaction"]["analysis"],
                     "prev_step_reflection": t["transaction"]["prev_step_reflection"],
+                    "analysis": t["transaction"]["analysis"],
+                    "action": t["transaction"]["action"]-self.algorithm_config.action_offset,
                 }
                 data = {
                     "instruction":t["transaction"]["input_sequence"] ,
