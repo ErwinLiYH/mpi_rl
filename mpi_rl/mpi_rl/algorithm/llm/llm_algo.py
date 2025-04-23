@@ -375,18 +375,19 @@ class LLM(BaseAlgorithm):
                 data = {
                     "instruction":t["transaction"]["input_sequence"] ,
                     "input": "",
-                    "output": f"<think>\n{t['transaction']['reasoning_content']}\n</think>\n{original_action_analysis}\n",
+                    "output": f"<think>\n{t['transaction']['reasoning_content']}\n</think>\n```json\n{original_action_analysis}\n```\n",
                 }
             data["step"] = t["index_in_episode"]
-            jsonl_list.append(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str, indent=4))
-            jsonl_str = "\n".join(jsonl_list)
+            data["reflex_good"] = t["transaction"]["reflex"]['reflection']["good"]
+            jsonl_list.append(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str))
 
-            # save jsonl data to file
-            it = self.progress_info["current_iteration"]
-            file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_finetune_iter{it}_{idx}.jsonl"
-            with open(file_name, 'w') as f:
-                f.write(jsonl_str)
-            return file_name
+        # save jsonl data to file
+        jsonl_str = "\n".join(jsonl_list)
+        it = self.progress_info["current_iteration"]
+        file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_finetune_iter{it}_{idx}.jsonl"
+        with open(file_name, 'w') as f:
+            f.write(jsonl_str)
+        return file_name
     
     def finetune_actor(self, episodes: list[Episode]):
         # make data for finetune
