@@ -370,6 +370,8 @@ class LLM(BaseAlgorithm):
                     "analysis": t["transaction"]["analysis"],
                     "action": t["transaction"]["action"]-self.algorithm_config.action_offset,
                 }
+                original_action_analysis = json.dumps(original_action_analysis, sort_keys=False, ensure_ascii=False, default=str)
+                                                      
                 data = {
                     "instruction":t["transaction"]["input_sequence"] ,
                     "input": "",
