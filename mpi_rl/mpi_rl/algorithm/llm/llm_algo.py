@@ -207,20 +207,23 @@ class LLM(BaseAlgorithm):
         # This algorithm need to store the episodes to replay_buffer in all ranks in MPI mode,
         # so we store the episodes in a temporary variable and store them to replay_buffer in post_train
         # which will run on all ranks.
+        import pickle
+        iteration = self.progress_info["current_iteration"]
+        with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_ori.pkl"),'wb') as f:
+            pickle.dump(episodes, f)
 
         fine_tune_data_path_list = []
         for idx, ep in enumerate(episodes):
             self.reflex(ep, idx)
+        with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_reflex.pkl"),'wb') as f:
+            pickle.dump(episodes, f)
+        for idx, ep in enumerate(episodes):
             self.teach(ep, idx)
             fine_tune_data_path_list.append(self.build_finetune_instruction(ep, idx))
 
         # TODO: move this to post train
         # save episodes for test
-        import pickle
-        with open(
-            os.path.join(self.algorithm_config.record_conversation, f"episodes_{self.progress_info['current_iteration']}.pkl"),
-            'wb'
-        ) as f:
+        with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_reflex_teach.pkl"),'wb') as f:
             pickle.dump(episodes, f)
 
         self.finetune_actor()
