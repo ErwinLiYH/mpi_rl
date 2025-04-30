@@ -13,12 +13,13 @@ from mpi_rl.utils.metric_group import MetricGroups
 from mpi_rl.utils import RemoteObjectProxy
 from mpi_rl.utils import get_env_type, flat_double_layer_list, DummyLogger
 
-from typing import Literal
+from typing import Literal, List
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 import logging
 import copy
+import os
 
 
 # typing aliases
@@ -46,7 +47,7 @@ class BaseAlgorithm:
             algorithm_config:BaseAlgorithmConfig = None,
             eval_interval:int = 1,
             mpi_architecture_config:MPIArchitectureConfig = None,
-            log_path:Literal[None, "print"]|LogPath = None,
+            log_paths:List[LogPath] = ["print"],
             multi_agent:bool = False,
             transaction_process_fn:callable = None
             ):
@@ -58,7 +59,7 @@ class BaseAlgorithm:
         self.model_config = model_config
         self.algorithm_config = algorithm_config
         self.eval_interval = eval_interval
-        self.log_path = log_path
+        self.log_paths = log_paths
         self.transaction_process_fn = transaction_process_fn
 
         self.operating_episode = Episode()
@@ -73,22 +74,7 @@ class BaseAlgorithm:
             self.name = "main"
 
         # initialize logger
-        if self.log_path == "print":  # log as print
-            self.logger = logging.getLogger(self.name)
-            ch = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            ch.setFormatter(formatter)
-            self.logger.addHandler(ch)
-        elif self.log_path == None:  # no log
-            self.logger = DummyLogger()
-        elif isinstance(self.log_path, str):  # log as file
-            self.logger = logging.getLogger(self.name)
-            ch = logging.FileHandler(self.log_path)
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            ch.setFormatter(formatter)
-            self.logger.addHandler(ch)
-        else:
-            raise ValueError("log_path should be str or None or False.")
+        self.logger = self._init_logger()
 
         # to maintain the rollout config state and env
         self._current_rollout_config = None
@@ -110,6 +96,33 @@ class BaseAlgorithm:
 
         # initialize the environment
         self.__init_env()
+
+    def _init_logger(self):
+        # if log_paths is empty, return DummyLogger
+        if not self.log_paths:
+            return DummyLogger()
+
+        # build the logger
+        logger = logging.getLogger(self.name)
+        logger.setLevel(logging.DEBUG)  # 设置全局日志级别
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+        for path in self.log_paths:
+            if path == "print":
+                handler = logging.StreamHandler()
+            elif isinstance(path, str):
+                # check if the path is a valid file path
+                dir_path = os.path.dirname(path)
+                if dir_path:
+                    os.makedirs(dir_path, exist_ok=True)
+                handler = logging.FileHandler(path)
+            else:
+                raise ValueError("elements in log_paths should be str of path or 'print'.")
+            
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+
+        return logger
 
     def __init_env(self):
         """

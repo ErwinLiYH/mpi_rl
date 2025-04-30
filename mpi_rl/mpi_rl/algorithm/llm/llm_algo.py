@@ -97,7 +97,7 @@ class LLM(BaseAlgorithm):
             algorithm_config:LLMConfig = None,
             eval_interval:int = 1,
             mpi_architecture_config:MPIArchitectureConfig = None,
-            log_path:str = "print",
+            log_paths:List[str] = ["print"],
             multi_agent:bool = False,
             transaction_process_fn:Callable = None,
             ):
@@ -111,7 +111,7 @@ class LLM(BaseAlgorithm):
             algorithm_config = algorithm_config,
             eval_interval = eval_interval,
             mpi_architecture_config = mpi_architecture_config,
-            log_path = log_path,
+            log_paths = log_paths,
             multi_agent = multi_agent,
             transaction_process_fn = transaction_process_fn
             )
