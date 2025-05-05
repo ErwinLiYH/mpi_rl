@@ -16,6 +16,7 @@ Num_Input_TokensT = int
 Num_Output_TokensT = int
 Input_SequenceT = str
 Invoker_outputT = tuple[ContentT, Filtered_ContentT, Reasoning_ContentT, Num_Input_TokensT, Num_Output_TokensT]
+Kto_Rollout_StatisticsT = dict[str, Any] # {"total_times":0, "good_times":0, "bad_times":0}
 
 # ------------------ Model invoking ------------------
 

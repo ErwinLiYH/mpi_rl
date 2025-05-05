@@ -186,3 +186,16 @@ class SpeedCalculator:
     def __str__(self) -> str:
         return f"{self.average_speed:.2f}"
     
+def chunk(lst, n):
+    if n <= 0:
+        raise ValueError("n must be a positive integer")
+    L = len(lst)
+    k, r = divmod(L, n)
+    sizes = [k + 1] * r + [k] * (n - r)
+    result = []
+    start = 0
+    for size in sizes:
+        end = start + size
+        result.append(lst[start:end])
+        start = end
+    return result

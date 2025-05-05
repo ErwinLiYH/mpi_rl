@@ -20,15 +20,21 @@ from mpi_rl.utils import Pipeline, advanced_retry
 from copy import deepcopy
 from pathlib import Path
 import os
+import sys
+import pickle
 
 from ransim_env.envs import scenario_two
 from prj_utils import path_allocator
 
 from Kkit import init_logger, PathJoin
+from Kkit.port_control import PortController
 
 
-exp_folder = path_allocator("exps/exp", "")
-exp_folder = Path(exp_folder).resolve().as_posix()
+if len(sys.argv) == 2:
+    exp_folder = sys.argv[1]
+elif len(sys.argv) == 1:
+    exp_folder = path_allocator("exps/exp", "")
+    exp_folder = Path(exp_folder).resolve().as_posix()
 print("Experiment result path:", exp_folder)
 
 prj_path_join = PathJoin(exp_folder)
@@ -37,7 +43,7 @@ def check_action(llm_action):
     assert llm_action["action"] in range(6, 41), f"action should be in range(6, 41)\n{llm_action}"
     return llm_action
 
-reflex_batch = 5
+reflex_batch = 2
 
 def check_reflex_length(reflex_action):
     assert len(reflex_action) == reflex_batch, f"reflex_action should have {reflex_batch} elements\n{reflex_action}"
@@ -53,6 +59,7 @@ def teach_check(teach_action):
 llm_action_filter_check = Pipeline(code_filter, json_filter2, check_action)
 llm_reflex_filter_check = Pipeline(code_filter, json_filter2, check_reflex_length)
 llm_teach_filter_check = Pipeline(code_filter_multi, teach_check)
+llm_teach2_filter_check = Pipeline(code_filter, json_filter2, check_action)
 
 ds_invoker_1 = GeneralRequestInvoker( # ds official
     full_url="https://api.deepseek.com/v1/chat/completions",
@@ -80,7 +87,7 @@ ds_invoker_3_retry = lambda x: advanced_retry(ds_invoker_3, 5, 60, messages=x)
 
 roundrobin_logger = init_logger("roundrobin", prj_path_join("roundrobin.log"))
 
-reflex_invoker = RoundRobinInvoker(ds_invoker_1_retry, ds_invoker_2_retry, ds_invoker_3_retry, weights=[1, 1, 4], try_round=10, sleep_btw_round=300, logger=roundrobin_logger)
+reflex_invoker = RoundRobinInvoker(ds_invoker_1_retry, ds_invoker_2_retry, weights=[1, 1], try_round=10, sleep_btw_round=300, logger=roundrobin_logger)
 
 act_invoker = GeneralRequestInvoker(
     full_url="http://localhost:9000/v1/chat/completions",
@@ -99,32 +106,66 @@ qwq32b_invoker_1 = GeneralRequestInvoker(
     temperature=0.6,
 )
 
-qwq32b_invoker_2 = GeneralRequestInvoker(
-    full_url="http://localhost:9001/v1/chat/completions",
-    model_name="Qwen7B1",
+# Init local invokers
+original_model_name = "Qwen3-8B"
+trained_model_name = "QwQ_1"
+original_port_controller = PortController(name=original_model_name)
+# trained_port_controller = PortController(name=trained_model_name)
+original_ports = original_port_controller.allocate_port(1)
+# trained_port = trained_port_controller.allocate_port()
+
+act_port = original_ports[0]
+reflex_port = original_ports[0]
+teach_port = original_ports
+
+print(f"original model port: {original_ports}")
+# print(f"trained model port: {trained_port}")
+
+print(f"act_port: {act_port}")
+print(f"reflex_port: {reflex_port}")
+print(f"teach_port: {teach_port}")
+
+qwq32b_invoker_act = GeneralRequestInvoker(
+    full_url=f"http://localhost:{act_port}/v1/chat/completions",
+    model_name=original_model_name,
     content_filter_fn=llm_action_filter_check,
     top_k=40,
     top_p=0.95,
     temperature=0.6,
 )
 
-qwq32b_invoker_3 = GeneralRequestInvoker(
-    full_url="http://localhost:9001/v1/chat/completions",
-    model_name="Qwen7B1",
+qwq32b_invoker_teach = GeneralRequestInvoker(
+    full_url=f"http://localhost:{teach_port}/v1/chat/completions",
+    model_name="QwQ_ori",
     content_filter_fn=llm_teach_filter_check,
     top_k=40,
     top_p=0.95,
     temperature=0.6,
 )
 
-qwq32b_invoker_4 = GeneralRequestInvoker(
-    full_url="http://localhost:9001/v1/chat/completions",
-    model_name="Qwen7B1",
+qwq32b_invoker_reflex = GeneralRequestInvoker(
+    full_url=f"http://localhost:{reflex_port}/v1/chat/completions",
+    model_name="QwQ_ori",
     content_filter_fn=llm_reflex_filter_check,
     top_k=40,
     top_p=0.95,
     temperature=0.6,
 )
+
+def make_retry_lambda(invoker):
+    return lambda x: advanced_retry(invoker, 10, 3, messages=x)
+
+qwq32b_invokers_teach2 = [
+    GeneralRequestInvoker(
+        full_url=f"http://localhost:{port}/v1/chat/completions",
+        model_name=original_model_name,
+        content_filter_fn=llm_teach2_filter_check,
+        top_k=40,
+        top_p=0.95,
+        temperature=0.6,
+    ) for port in teach_port
+]
+qwq32b_invokers_teach2_retry = [make_retry_lambda(invoker) for invoker in qwq32b_invokers_teach2]
 
 qwen_counter = HuggingfaceTokenCounter(model_name="Qwen/Qwen2.5-7B", bias=5)
 deepseek_counter = HuggingfaceTokenCounter(model_name="deepseek-ai/DeepSeek-R1", bias=5)
@@ -316,14 +357,32 @@ def process_transaction_reflex(transaction: Transaction):
 def process_obs(obs):
     return list(obs[0:5])
 
+def kto_rollout_stop(rollout_statistics):
+    if rollout_statistics["total_times"] >= 20:
+        return True
+    return False
+
+def kto_finish_check(rollout_statistics):
+    if rollout_statistics["good_times"]/rollout_statistics["total_times"] >= 0.6:
+        return True
+    return False
+
+def kto_filter(transaction: Transaction):
+    metrics_SE = transaction["next_obs"][1]
+    metrics_SLA = transaction["next_obs"][5]
+    metrics_RB = transaction["next_obs"][6]
+    metrics_is_good = (metrics_SE > 5 and metrics_SE < 6.5) and metrics_SLA == 0 and metrics_RB == 0
+    reflex_is_good = transaction["reflex"]["reflection"]["good"]
+    return metrics_is_good and reflex_is_good
+
 llm_config = LLMConfig(
     system_description=system_desc,
     act_prompt=act_prompt,
     reflex_prompt=reflex_prompt,
     teach_prompt=teach_prompt,
-    act_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_2, 5, 3, messages=x),
-    reflex_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_4, 5, 3, messages=x),
-    teach_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_3, 5, 3, messages=x),
+    act_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_act, 10, 3, messages=x),
+    reflex_invoke_fn=reflex_invoker,
+    teach_invoke_fn=qwq32b_invokers_teach2_retry,
     metrics_statistics_fn=metrics_statistics,
     reflex_model_tokens_counter_fn=deepseek_counter,
     act_model_tokens_counter_fn=qwen_counter,
@@ -336,6 +395,11 @@ llm_config = LLMConfig(
     reflex_batch=reflex_batch,
     fine_tune_data_path=prj_path_join("fine_tune_data"),
     action_offset=-6,
+    teach_method="kto",
+    kto_rollout_stop_fn=kto_rollout_stop,
+    kto_finish_check_fn=kto_finish_check,
+    kto_human_refine=True,
+    kto_specified_transaction_process_fn=process_transaction_reflex,
 )
 
 episode_len = 300
@@ -378,10 +442,34 @@ llm_algo = LLM(
     eval_rollout_config = eval_rollout_config,
     replay_buffer = replay,
     algorithm_config = llm_config,
-    multi_agent = False
+    multi_agent = False,
+    log_paths = ["print", prj_path_join("llm_algo.log")],
 )
 
 llm_algo.logger.setLevel("INFO")
 
+# train
+# for _ in range(1):
+#     llm_algo.train_iteration()
+
+# eval
 for _ in range(1):
-    llm_algo.train_iteration()
+    with llm_algo.train_state():
+        eps = llm_algo.rollout()
+        for ep in eps:
+            llm_algo.logger.info(llm_algo.algorithm_config.metrics_statistics_fn(ep))
+
+# kto rollout
+# ori = prj_path_join("episodes_0_reflex_teach2_iter3.pkl")
+# out = prj_path_join("episodes_0_reflex_teach2_iter4.pkl")
+# it = 4
+# with open(ori, "rb") as f:
+#     eps = pickle.load(f)
+#     print(f"loaded episodes in {ori}")
+
+# for ep in eps:
+#     llm_algo.kto_iteration(ep, 0, it)
+
+# with open(out, "wb") as f:
+#     pickle.dump(eps, f)
+#     print(f"saved episodes in {out}")

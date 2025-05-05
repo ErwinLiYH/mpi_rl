@@ -13,20 +13,23 @@ else:
 from mpi_rl.mpi_rl.algorithm.base_algorithm import BaseAlgorithm, BaseAlgorithmConfig
 from dataclasses import dataclass
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, List
 
 from mpi_rl.utils.replay_buffer import Episode, ReplayBuffer, Transaction
 from mpi_rl.utils.config_helper import RolloutConfig
+from mpi_rl.utils import chunk
 
 from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate, TeachTemplate
 from mpi_rl.utils import remove_first_line
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import re
 
 # Typing Aliases
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Path_Without_NameT, MessagesT, \
-    Input_SequenceT, Invoker_outputT
+    Input_SequenceT, Invoker_outputT, Kto_Rollout_StatisticsT, BaseInvoker
 
 @dataclass
 class LLMConfig(BaseAlgorithmConfig):
@@ -36,7 +39,7 @@ class LLMConfig(BaseAlgorithmConfig):
     teach_prompt:str
     act_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     reflex_invoke_fn: Callable[[MessagesT], Invoker_outputT]
-    teach_invoke_fn: Callable[[MessagesT], Invoker_outputT]
+    teach_invoke_fn: Callable[[MessagesT], Invoker_outputT]|List[Callable[[MessagesT], Invoker_outputT]]
     metrics_statistics_fn:Callable[[Episode], Any]
     system_prompt: str = ""
     system_description_in_user: bool = True
@@ -61,6 +64,11 @@ class LLMConfig(BaseAlgorithmConfig):
     reflex_specific_transaction_process_fn: Optional[Callable] = None
     fine_tune_data_path: Optional[Path_Without_NameT] = None
     action_offset:float = 0
+    teach_method:str = "instruction" # "instruction" or "kto"
+    kto_rollout_stop_fn: Callable[[Kto_Rollout_StatisticsT], bool] = lambda x: x["total_times"] >= 20
+    kto_human_refine:bool = False
+    kto_finish_check_fn: Callable[[Kto_Rollout_StatisticsT], bool] = lambda x: x["good_times"] > 0
+    kto_specified_transaction_process_fn: Optional[Callable] = lambda x: x
 
     def __post_init__(self):
         # model_tokens_counter_fn and max_tokens_input should be None together or not None together
@@ -81,6 +89,12 @@ class LLMConfig(BaseAlgorithmConfig):
 
         if self.fine_tune_data_path is not None:
             os.makedirs(self.fine_tune_data_path, exist_ok=True)
+
+        if self.teach_method == "kto":
+            assert self.kto_rollout_stop_fn is not None, "kto_rollout_stop_fn should be set when teach_method is kto."
+
+        if self.teach_method == "instruction":
+            assert self.kto_rollout_stop_fn is None, "kto_rollout_stop_fn should not be set when teach_method is instruction."
 
 class LLM(BaseAlgorithm):
     """
@@ -287,6 +301,15 @@ class LLM(BaseAlgorithm):
                     f.write(conversation)
 
     def teach(self, episode:Episode, idx:int):
+        """
+        construct instruction sft data, by:
+            for all bad steps in the episode:
+                1. extend the original reasoning by a adversative clause (`turning` in code), according to the reflection
+                2. generate new action according to the reflection
+                3. construct the instruction data: instruction=original input, output=original reasoning + turning + new action
+            for all good steps in the episode:
+                1. construct the instruction data: instruction=original input, output=original reasoning + original action analysis
+        """
         for i, t in enumerate(episode):
             original_action_analysis = {
                 "action": t["transaction"]["action"]-self.algorithm_config.action_offset,
@@ -357,6 +380,7 @@ class LLM(BaseAlgorithm):
                         f.write(conversation)
     
     def build_finetune_instruction(self, episode: Episode, idx:int):
+        """generate instruction finetune data for `self.teach()`"""
         jsonl_list = []
         for t in episode:
             if t["transaction"]["reflex"]['reflection']["good"] == False:
@@ -392,6 +416,279 @@ class LLM(BaseAlgorithm):
             f.write(jsonl_str)
         return file_name
     
+    def kto_iteration(self, episode: Episode, ep_idx:int, kto_it_idx:int):
+        """"rollout kto data"""
+        # make folder to record conversation
+        it = self.progress_info["current_iteration"] # train iteration
+        if self.algorithm_config.record_conversation:
+            os.makedirs(os.path.join(self.algorithm_config.record_conversation, f"{self.name}_iter{it}", f"kto_iter{kto_it_idx}"), exist_ok=True)
+        # human refine data
+        if self.algorithm_config.kto_human_refine:
+            self.kto_human_refine(episode, ep_idx)
+        # rollout kto data
+        final_data = []
+        unfinished_transactions = []
+        # TODO check good here
+        for trans in episode:
+            kto_finished = trans["transaction"]["reflex"]["reflection"].get("kto_finished", False)
+            reflex = trans["transaction"]["reflex"]
+            human_good = reflex["reflection"].get("human_good", None)
+            reflex_good = reflex["reflection"].get("good", None)
+            input_sequence = trans["transaction"]["input_sequence"]
+            transaction = trans["transaction"]
+            if human_good is not None:
+                good = human_good
+            else:
+                if reflex_good is not None:
+                    good = reflex_good
+                else:
+                    raise ValueError("human_good and reflex_good are both None.")
+            if good and (kto_finished==False):
+                reflex["reflection"]["kto_finished"] = True
+                reflex["reflection"]["kto_remark"] = "Kto finished"
+                final_data.append({
+                    "conversations": [
+                        {
+                            "from": "human",
+                            "value": input_sequence
+                        },
+                        {
+                            "from": "gpt",
+                            "value": f"<think>\n{transaction['reasoning_content']}\n</think>\n{transaction['content']}\n"
+                        }
+                    ],
+                    "step": trans["index_in_episode"],
+                    "episode_index": ep_idx,
+                    "iteration": self.progress_info["current_iteration"],
+                    "kto_tag": True
+                })
+            elif not good and (kto_finished==False):
+                unfinished_transactions.append(trans)
+            else:
+                pass
+        if len(unfinished_transactions) == 0:
+            self.logger.info(f"All transactions in episode {ep_idx} are finished.")
+            return None
+        else:
+            self.logger.info(f"Number of unfinished transactions in episode {ep_idx}: {len(unfinished_transactions)}")
+            for unfinished_transaction in unfinished_transactions:
+                self.logger.info(f"Unfinished transaction: {unfinished_transaction['index_in_episode']}")
+        if isinstance(self.algorithm_config.teach_invoke_fn, list) and len(self.algorithm_config.teach_invoke_fn)>1:  # multi-thread mode
+            n_thread = len(self.algorithm_config.teach_invoke_fn)
+            self.logger.info(f"Got {n_thread} invokers, using multi-thread mode for KTO.")
+            # separate the unfinished transactions into n_thread parts
+            unfinished_transactions_lst = chunk(unfinished_transactions, n_thread)
+            # invoke the transactions in parallel
+            with ThreadPoolExecutor(max_workers=n_thread) as executor:
+                futures = [
+                    executor.submit(
+                        self.kto_episode, 
+                        unfinished_transactions_lst[i],
+                        self.algorithm_config.teach_invoke_fn[i],
+                        ep_idx,
+                        i,
+                        kto_it_idx
+                    ) for i in range(n_thread)
+                ]
+                res = [future.result() for future in futures]
+                for r in res:
+                    final_data.extend(r)
+        else: # single-thread mode
+            self.logger.info(f"Got 1 invoker, using single-thread mode for KTO.")
+            if isinstance(self.algorithm_config.teach_invoke_fn, list):
+                teach_invoke_fn = self.algorithm_config.teach_invoke_fn[0]
+            else:
+                teach_invoke_fn = self.algorithm_config.teach_invoke_fn
+            final_data = self.kto_episode(unfinished_transactions, teach_invoke_fn, ep_idx, kto_it_idx)
+        # log final situation in this Kto iteration
+        rollout_total = 0
+        finished_num = 0
+        for trans in unfinished_transactions:
+            self.logger.info(f"Episode {ep_idx} - Step {trans['index_in_episode']} - {trans['transaction']['reflex']['reflection']['kto_remark']}")
+            rollout_total += 1
+            if trans["transaction"]["reflex"]["reflection"].get("kto_finished", False):
+                finished_num += 1
+        self.logger.info(f"Episode {ep_idx} - Kto iteration {kto_it_idx} - Finished {finished_num}/{rollout_total} transactions.")
+        # save json data to file
+        data_dir = os.path.join(self.algorithm_config.fine_tune_data_path, f"{self.name}_iter{it}")
+        os.makedirs(data_dir, exist_ok=True) # guarantee the directory exists
+        file_name = os.path.join(data_dir, f"kto_finetune_iter{kto_it_idx}_ep{ep_idx}.json")
+        with open(file_name, 'w') as f:
+            json.dump(final_data, f, indent=4, sort_keys=False, ensure_ascii=False, default=str)
+        return file_name, finished_num, rollout_total
+    
+    def kto_human_refine(self, episode: Episode, ep_idx:int):
+        it = self.progress_info["current_iteration"] # train iteration
+        file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_kto_human_refine_iter{it}_{ep_idx}.txt"
+
+        if not os.path.exists(file_name):
+            with open(file_name, 'w') as f:
+                f.write(s)
+            str_list = []
+            for i in range(len(episode)):
+                reflection = episode[i]["transaction"]["reflex"]["reflection"]
+                transaction = self.algorithm_config.kto_specified_transaction_process_fn(episode[i]["transaction"])
+                json_str = json.dumps(transaction, cls=IntFloatEncoder, round_digits=self.algorithm_config.round_digits, \
+                                    sort_keys=True, ensure_ascii=False, default=str)
+                human_suggested_action = reflection.get("human_suggested_action", None)
+                if human_suggested_action is not None:
+                    json_str = f"Step {episode[i]['index_in_episode']}: {json_str}{{{human_suggested_action}}}"
+                else:
+                    original_action = episode[i]["transaction"]["action"]-self.algorithm_config.action_offset
+                    json_str = f"Step {episode[i]['index_in_episode']}: {json_str}{{{original_action}}}"
+                str_list.append(json_str)
+            s = "\n".join(str_list)
+            # save s to file
+
+            print(f"Please edit the file {file_name} to add human suggested action.")
+            input("Edit the file and press Enter to continue...")
+
+        # read the file and update the transaction
+        with open(file_name, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            if line == "":
+                continue
+            match = re.search(r'Step (\d+).*?\{(\d+)\}', line)
+            if match:
+                step = int(match.group(1))
+                human_suggested_action = int(match.group(2))
+                original_action = episode[step]["transaction"]["action"]-self.algorithm_config.action_offset
+                human_good = human_suggested_action==original_action
+                episode[step]["transaction"]["reflex"]["reflection"]["human_suggested_action"] = human_suggested_action
+                episode[step]["transaction"]["reflex"]["reflection"]["human_good"] = human_good
+                self.logger.info(f"Step {step} - {original_action} - Human suggested action: {human_suggested_action}, Good: {human_good}")
+    
+    def kto_episode(self, transactions: list[Transaction], invoker:BaseInvoker, ep_idx:int, thread_idx:int=0, kto_it_idx:int=0):
+        final_data = []
+        for trans in transactions:
+            data = self.kto_transaction(trans["transaction"], invoker, trans["index_in_episode"], ep_idx, thread_idx, kto_it_idx)
+            final_data.extend(data)
+        return final_data
+
+    def kto_transaction(self, transaction:Transaction, invoker:BaseInvoker, trans_idx:int, ep_idx:int, thread_idx:int=0, kto_it_idx:int=0):
+        kto_finished = transaction["reflex"]["reflection"].get("kto_finished", False)
+        if kto_finished:
+            return []
+        data = []
+        input_sequence = transaction["input_sequence"]
+        reflex = transaction["reflex"]
+        human_good = reflex["reflection"].get("human_good", None)
+        reflex_good = reflex["reflection"].get("good", None)
+        if human_good is not None:
+            good = human_good
+        else:
+            if reflex_good is not None:
+                good = reflex_good
+            else:
+                raise ValueError("human_good and reflex_good are both None.")
+        if good:
+            reflex["reflection"]["kto_finished"] = True
+            reflex["reflection"]["kto_remark"] = "Kto finished"
+            data.append({
+                "conversations": [
+                    {
+                        "from": "human",
+                        "value": input_sequence
+                    },
+                    {
+                        "from": "gpt",
+                        "value": f"<think>\n{transaction['reasoning_content']}\n</think>\n{transaction['content']}\n"
+                    }
+                ],
+                "step": trans_idx,
+                "episode_index": ep_idx,
+                "iteration": self.progress_info["current_iteration"],
+                "kto_tag": True
+            })
+        else:
+            rollout_statistics = {"total_times":0, "good_times":0, "bad_times":0}
+            kto_actions = []
+            data.append({
+                "conversations": [
+                    {
+                        "from": "human",
+                        "value": input_sequence
+                    },
+                    {
+                        "from": "gpt",
+                        "value": f"<think>\n{transaction['reasoning_content']}\n</think>\n{transaction['content']}\n"
+                    }
+                ],
+                "step": trans_idx,
+                "episode_index": ep_idx,
+                "iteration": self.progress_info["current_iteration"],
+                "kto_tag": False
+            })
+            while True:
+                reflex_suggested_action = reflex["reflection"].get("suggested_action", None)
+                human_suggested_action = reflex["reflection"].get("human_suggested_action", None)
+                if reflex_suggested_action is None and human_suggested_action is None:
+                    raise ValueError("reflex_suggested_action and human_suggested_action are both None.")
+                target_action = human_suggested_action if human_suggested_action is not None else reflex_suggested_action
+                content, llm_teach, reasoning_content, input_len, output_len = invoker(self.build_messages(input_sequence))
+                rollout_statistics["total_times"] += 1
+                if llm_teach["action"] == target_action: # good action
+                    kto_tag = True
+                    remark = "kto rollout good"
+                    rollout_statistics["good_times"] += 1
+                else:
+                    kto_tag = False
+                    remark = f"kto rollout bad, expected action: {target_action}, got: {llm_teach['action']}"
+                    rollout_statistics["bad_times"] += 1
+                if thread_idx is not None:
+                    self.logger.info(f"KTO - Thread {thread_idx} - Step {trans_idx} - Rollout <total: {rollout_statistics['total_times']} good: {rollout_statistics['good_times']} bad: {rollout_statistics['bad_times']}> - Expect: {target_action} - Got: {llm_teach['action']}")
+                else:
+                    self.logger.info(f"KTO - Step {trans_idx} - Rollout <total: {rollout_statistics['total_times']} good: {rollout_statistics['good_times']} bad: {rollout_statistics['bad_times']}> - Expect: {target_action} - Got: {llm_teach['action']}")
+                kto_actions.append(llm_teach["action"])
+                # build data
+                data.append({
+                    "conversations": [
+                        {
+                            "from": "human",
+                            "value": input_sequence
+                        },
+                        {
+                            "from": "gpt",
+                            "value": f"<think>\n{reasoning_content}\n</think>\n{content}\n"
+                        }
+                    ],
+                    "step": trans_idx,
+                    "episode_index": ep_idx,
+                    "iteration": self.progress_info["current_iteration"],
+                    "kto_target_action": llm_teach["action"],
+                    "kto_tag": kto_tag
+                })
+                # record conversation
+                if self.algorithm_config.record_conversation:
+                    it = self.progress_info["current_iteration"]
+                    file_name = os.path.join(
+                        self.algorithm_config.record_conversation,
+                        f"{self.name}_iter{it}", f"kto_iter{kto_it_idx}",
+                        f"kto_teach_ep{ep_idx}_step{trans_idx}_history.txt",
+                        )
+                    with open(file_name,'a') as f:
+                        conversation = self.make_conversation(
+                            (input_sequence if rollout_statistics["total_times"]==1 else None), reasoning_content,
+                            content, "None", input_len, output_len, remark
+                        )
+                        f.write(conversation)
+                # stop rollout
+                if self.algorithm_config.kto_rollout_stop_fn(rollout_statistics):
+                    if self.algorithm_config.kto_finish_check_fn(rollout_statistics):
+                        reflex["reflection"]["kto_finished"] = True
+                        reflex["reflection"]["kto_remark"] = "Kto finished"
+                    else:
+                        reflex["reflection"]["kto_finished"] = False
+                        reflex["reflection"]["kto_remark"] = f"Kto not finished, expected action: {target_action}, rollout statistics: {rollout_statistics}"
+                    if "kto_actions" in reflex["reflection"]:
+                        reflex["reflection"]["kto_actions"].append(kto_actions)
+                    else:
+                        reflex["reflection"]["kto_actions"] = [kto_actions]
+                    break
+        return data
+
     def finetune_actor(self, episodes: list[Episode]):
         # make data for finetune
         finetune_conversation = []
@@ -423,10 +720,12 @@ class LLM(BaseAlgorithm):
 
     # ----------------- LLM algorithm specific functions -----------------
 
-    def make_conversation(self, input_sequence, reasoning_content, content, expected_input_token_count, input_len, output_len):
-        conversation = "User:\n\n" \
-                    + input_sequence + "\n" \
-                    + "-"*50 + "\n"
+    def make_conversation(self, input_sequence, reasoning_content, content, expected_input_token_count, input_len, output_len, remark=None):
+        conversation = ""
+        if input_sequence is not None:
+            conversation = "User:\n\n" \
+                        + input_sequence + "\n" \
+                        + "-"*50 + "\n"
         if reasoning_content is not None:
             conversation = conversation \
                             + "Reasoning:\n\n" \
@@ -437,6 +736,7 @@ class LLM(BaseAlgorithm):
                         + content + "\n" \
                         + "-"*50 + "\n" \
                         + f"< expected input tokens: {expected_input_token_count}, input tokens: {input_len}, output tokens: {output_len} >\n" \
+                        + (f"< remark: {remark} >\n" if remark!=None else "") \
                         + "<"*25 + ">"*25 + "\n"
         return conversation
     
@@ -489,6 +789,15 @@ class LLM(BaseAlgorithm):
             else:
                 return self.algorithm_config.act_invoke_fn(messages)
         return inner()
+    
+    def build_messages(self, input_sequence:str):
+        """
+        Build the message for the LLM API.
+        """
+        messages = [{"role": "system", "content": f"{self.system_prompt}"}] \
+            if self.algorithm_config.system_description_in_user == False else []
+        messages.append({"role": "user", "content": input_sequence})
+        return messages
 
 
 class IntFloatEncoder(json.JSONEncoder):
