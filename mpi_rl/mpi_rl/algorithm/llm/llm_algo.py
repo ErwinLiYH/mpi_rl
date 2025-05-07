@@ -43,12 +43,6 @@ class LLMConfig(BaseAlgorithmConfig):
     metrics_statistics_fn:Callable[[Episode], Any]
     system_prompt: str = ""
     system_description_in_user: bool = True
-    teach_model_tokens_counter_fn: Optional[Callable[[Input_SequenceT],int]] = None
-    reflex_model_tokens_counter_fn: Optional[Callable[[Input_SequenceT],int]] = None
-    act_model_tokens_counter_fn: Optional[Callable[[Input_SequenceT],int]] = None
-    reflex_max_tokens_input: int = None
-    act_max_tokens_input: int = None
-    teach_max_tokens_input: int = None
     transaction_process_fn: Callable = lambda x: x     # A function to process the transaction before convert to json string,
                                                        # do 1.select the useful data, 2. convert the data type to basic type.
                                                        # Need convert numpy array or pytorch tensor to list to save space
@@ -71,19 +65,6 @@ class LLMConfig(BaseAlgorithmConfig):
     kto_specified_transaction_process_fn: Optional[Callable] = lambda x: x
 
     def __post_init__(self):
-        # model_tokens_counter_fn and max_tokens_input should be None together or not None together
-        assert (self.act_model_tokens_counter_fn is None and self.act_max_tokens_input is None) or \
-                (self.act_model_tokens_counter_fn is not None and self.act_max_tokens_input is not None), \
-                "act_model_tokens_counter_fn and act_max_tokens_input should be None together or not None together."
-        
-        assert (self.reflex_model_tokens_counter_fn is None and self.reflex_max_tokens_input is None) or \
-                (self.reflex_model_tokens_counter_fn is not None and self.reflex_max_tokens_input is not None), \
-                "reflex_model_tokens_counter_fn and reflex_max_tokens_input should be None together or not None together."
-        
-        assert (self.teach_model_tokens_counter_fn is None and self.teach_max_tokens_input is None) or \
-                (self.teach_model_tokens_counter_fn is not None and self.teach_max_tokens_input is not None), \
-                "teach_model_tokens_counter_fn and teach_max_tokens_input should be None together or not None together."
-        
         if self.record_conversation is not None:
             os.makedirs(self.record_conversation, exist_ok=True)
 
@@ -166,27 +147,6 @@ class LLM(BaseAlgorithm):
             partial_episode=episode_str,
             step=str(self.progress_info["num_local_step"])
         )
-
-        # check if need to reduce episode history
-        expected_input_token_count = \
-            self.algorithm_config.act_model_tokens_counter_fn(input_sequence+self.system_prompt)
-        self.logger.debug(f"Expected Input token count: {expected_input_token_count}")
-        if expected_input_token_count > self.algorithm_config.act_max_tokens_input:
-            self.logger.info(f"Expected Input token count: {expected_input_token_count} \
-                             > act_max_tokens_input: {self.algorithm_config.act_max_tokens_input}.")
-            to_reduce = expected_input_token_count - self.algorithm_config.act_max_tokens_input
-            encoded_episode_str = self.encoder(episode_str)
-            # reduce previous replay buffer
-            encoded_episode_str = encoded_episode_str[to_reduce+10:]   # plus 10 for safety
-            encoded_episode_str = self.encoder.decode(encoded_episode_str)
-            encoded_episode_str = remove_first_line(encoded_episode_str)  # remove first uncompleted line
-            partial_episode = "下面是按时间顺序排列的历史步骤:\n(倒数第一行是前一步历史, 倒数第二行是前两步历史, 以此类推)\n\n"\
-                            + episode_str \
-                            + "\n\n"
-            input_sequence = self.act_template.format(
-                obs=obs,
-                partial_episode=partial_episode
-            )
         
         self.logger.debug(input_sequence)
 
@@ -197,7 +157,7 @@ class LLM(BaseAlgorithm):
         if self.algorithm_config.record_conversation:
             with open(f"{os.path.join(self.algorithm_config.record_conversation, self.name)}_compute_act_{self.status}_history.txt", 'a') as f:
                 conversation = self.make_conversation(
-                    input_sequence, reasoning_content, content, expected_input_token_count, input_len, output_len
+                    input_sequence, reasoning_content, content, "None", input_len, output_len
                 )
                 f.write(conversation)
         
