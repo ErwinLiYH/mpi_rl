@@ -157,21 +157,14 @@ class LLM(BaseAlgorithm):
             separators=(',', ':')
         ) if len(self.operating_episode) > 0 else 'None'
         
-        partial_episode = "下面是按顺序排列的历史步骤:\n(如果为None则代表这是初始步,当前无历史记录)\n\n"\
-                        + episode_str \
-                        + "\n\n"
-        
         obs_str = json.dumps(self.algorithm_config.obs_process_fn(obs), cls=IntFloatEncoder, 
                              round_digits=self.algorithm_config.round_digits, 
                              separators=(',', ':'), sort_keys=True, ensure_ascii=False, default=str)
-        
-        obs = f"下面是 step {self.progress_info['num_local_step']} 的观测:\n\n"\
-            + obs_str \
-            + "\n\n"
 
         input_sequence = self.act_template.format(
-            obs=obs,
-            partial_episode=partial_episode
+            obs=obs_str,
+            partial_episode=episode_str,
+            step=str(self.progress_info["num_local_step"])
         )
 
         # check if need to reduce episode history
@@ -245,8 +238,7 @@ class LLM(BaseAlgorithm):
     def reflex(self, episode: Episode, idx:int):
         metrics_dict = self.algorithm_config.metrics_statistics_fn(episode)
 
-        episode_metrics = "这是上面这个完整episode的性能指标统计值: \n\n" \
-                        + json.dumps(metrics_dict) + "\n\n"
+        episode_metrics = json.dumps(metrics_dict)
         
         def window_indices(length, n):
             i = 0
@@ -273,12 +265,9 @@ class LLM(BaseAlgorithm):
             episode_end_str = self.episode_to_str(ep_end, process_fn=process_fn, \
                 separators=(',', ':')) + "\n" if len(ep_end) > 0 else ''
             episode_str = episode_start_str + episode_focus_str + episode_end_str
-            the_episode = "下面是按时间顺序排列的一个episode中的完整步骤, 这一步主要关注用<<<< >>>包裹的片段Z:\n\n"\
-                        + episode_str \
-                        + "\n\n"
         
             input_sequence = self.reflex_template.format(
-                episode=the_episode,
+                episode=episode_str,
                 episode_metrics=episode_metrics
             )
 
