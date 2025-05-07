@@ -28,8 +28,10 @@ import os
 import re
 
 # Typing Aliases
+from mpi_rl.utils import MPIArchitectureConfig
+
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Path_Without_NameT, MessagesT, \
-    Input_SequenceT, Invoker_outputT, Kto_Rollout_StatisticsT, BaseInvoker
+    Input_SequenceT, Invoker_outputT, Kto_Rollout_StatisticsT, BaseInvoker, JsonableT
 
 @dataclass
 class LLMConfig(BaseAlgorithmConfig):
@@ -40,29 +42,29 @@ class LLMConfig(BaseAlgorithmConfig):
     act_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     reflex_invoke_fn: Callable[[MessagesT], Invoker_outputT]
     teach_invoke_fn: Callable[[MessagesT], Invoker_outputT]|List[Callable[[MessagesT], Invoker_outputT]]
-    metrics_statistics_fn:Callable[[Episode], Any]
+    metrics_statistics_fn:Callable[[Episode], JsonableT]
     system_prompt: str = ""
     system_description_in_user: bool = True
-    transaction_process_fn: Callable = lambda x: x     # A function to process the transaction before convert to json string,
+    transaction_process_fn: Callable[[Transaction], JsonableT] = lambda x: x     # A function to process the transaction before convert to json string,
                                                        # do 1.select the useful data, 2. convert the data type to basic type.
                                                        # Need convert numpy array or pytorch tensor to list to save space
                                                        # because numpy array and pytorch tensor can't using `IntFloatEncoder`,
                                                        # then just `str()` for them, which will waste token count.
                                                        # e.g. str(np.array([1.1111111, 2.0, 3.0]) => "[1.1111111 2.        3.       ]"
                                                        # if using `IntFloatEncoder`, it will be "[1.11, 2, 3]"
-    obs_process_fn: Callable = lambda x: x     # A function to process the observation before convert to json string, similar to transaction_process_fn
+    obs_process_fn: Callable[[Any],JsonableT] = lambda x: x     # A function to process the observation before convert to json string, similar to transaction_process_fn
     round_digits: int = 2
     record_conversation: None|Path_Without_NameT = None
     max_history:int = 50
     reflex_batch:int = 5
-    reflex_specific_transaction_process_fn: Optional[Callable] = None
+    reflex_specific_transaction_process_fn: Optional[Callable[[Transaction], JsonableT]] = None
     fine_tune_data_path: Optional[Path_Without_NameT] = None
     action_offset:float = 0
     teach_method:str = "instruction" # "instruction" or "kto"
     kto_rollout_stop_fn: Callable[[Kto_Rollout_StatisticsT], bool] = lambda x: x["total_times"] >= 20
     kto_human_refine:bool = False
     kto_finish_check_fn: Callable[[Kto_Rollout_StatisticsT], bool] = lambda x: x["good_times"] > 0
-    kto_specified_transaction_process_fn: Optional[Callable] = lambda x: x
+    kto_specified_transaction_process_fn: Callable[[Transaction], JsonableT] = lambda x: x
 
     def __post_init__(self):
         if self.record_conversation is not None:
