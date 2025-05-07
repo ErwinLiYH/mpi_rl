@@ -6,7 +6,6 @@ from my_secret_keys import volcano_r1_name
 
 from mpi_rl.mpi_rl.algorithm.llm.llm_algo import LLM, LLMConfig
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import (
-        HuggingfaceTokenCounter, 
         GeneralRequestInvoker, 
         RoundRobinInvoker, 
         code_filter_multi, 
@@ -166,9 +165,6 @@ qwq32b_invokers_teach2 = [
     ) for port in teach_port
 ]
 qwq32b_invokers_teach2_retry = [make_retry_lambda(invoker) for invoker in qwq32b_invokers_teach2]
-
-qwen_counter = HuggingfaceTokenCounter(model_name="Qwen/Qwen2.5-7B", bias=5)
-deepseek_counter = HuggingfaceTokenCounter(model_name="deepseek-ai/DeepSeek-R1", bias=5)
 
 system_desc = """\
 # 网络切片资源控制任务
@@ -384,10 +380,6 @@ llm_config = LLMConfig(
     reflex_invoke_fn=reflex_invoker,
     teach_invoke_fn=qwq32b_invokers_teach2_retry,
     metrics_statistics_fn=metrics_statistics,
-    reflex_model_tokens_counter_fn=deepseek_counter,
-    act_model_tokens_counter_fn=qwen_counter,
-    reflex_max_tokens_input=64000, # 64k tokens
-    act_max_tokens_input=64000, # 64k tokens
     transaction_process_fn = process_transaction,
     obs_process_fn = process_obs,
     record_conversation = exp_folder,
