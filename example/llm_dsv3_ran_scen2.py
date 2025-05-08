@@ -387,7 +387,6 @@ llm_config = LLMConfig(
     reflex_batch=reflex_batch,
     fine_tune_data_path=prj_path_join("fine_tune_data"),
     action_offset=-6,
-    teach_method="kto",
     kto_rollout_stop_fn=kto_rollout_stop,
     kto_finish_check_fn=kto_finish_check,
     kto_human_refine=True,
