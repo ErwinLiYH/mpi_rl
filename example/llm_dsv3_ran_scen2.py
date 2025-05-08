@@ -1,6 +1,3 @@
-from mpi_rl import config
-config.use_mpi = False
-
 from my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key, openrouter_api_key # use your own API keys
 from my_secret_keys import volcano_r1_name
 

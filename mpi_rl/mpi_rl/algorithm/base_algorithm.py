@@ -1,12 +1,14 @@
 # whether to use mpi or not ------------
-from mpi_rl import config
-__IF_MPI = config.use_mpi
-
-if __IF_MPI:
+from mpi_rl.config import get_use_mpi
+if get_use_mpi():
     from mpi4py import MPI
     from mpi_rl.mpi_utils.mpi_architecture_config import MPIArchitectureConfig
+else:
+    from mpi_rl.utils import MPI  # fake MPI
+    from mpi_rl.utils import MPIArchitectureConfig  # fake MPIArchitectureConfig
 # --------------------------------------
 
+from mpi_rl import config
 from mpi_rl.utils.replay_buffer import Episode, Transaction, ReplayBuffer
 from mpi_rl.utils.config_helper import RolloutConfig, ModelConfig
 from mpi_rl.utils.metric_group import MetricGroups
@@ -23,9 +25,6 @@ import os
 
 
 # typing aliases
-if not __IF_MPI:
-    # if not using MPI, set the MPIArchitectureConfig to None
-    MPIArchitectureConfig = Literal[None]
 LogPath = str
 
 @dataclass
@@ -303,7 +302,7 @@ class BaseAlgorithm:
     
     def train_iteration_mpi(self):
         self.global_comm.Barrier()
-        if  "training" in self.mpi_architecture_config.role:
+        if  "training" in self.mpi_architecture_config.role:# TODO: log 不需要写rank之类的，name里包括了
             self.logger.info(f"Start training in rank {self.mpi_architecture_config.group_rank} of group {self.mpi_architecture_config.group}")
             with self.train_state():
                 # each rank rollout and collect episodes

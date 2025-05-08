@@ -1,13 +1,11 @@
 # whether to use mpi or not ------------
-from mpi_rl import config
-__IF_MPI = config.use_mpi
-
-if __IF_MPI:
+from mpi_rl.config import get_use_mpi
+if get_use_mpi():
     from mpi4py import MPI
     from mpi_rl.mpi_utils.mpi_architecture_config import MPIArchitectureConfig
 else:
-    # typing alias, MPIArchitectureConfig should be None if not using mpi
-    MPIArchitectureConfig = None
+    from mpi_rl.utils import MPI  # fake MPI
+    from mpi_rl.utils import MPIArchitectureConfig  # fake MPIArchitectureConfig
 # --------------------------------------
 
 from mpi_rl.mpi_rl.algorithm.base_algorithm import BaseAlgorithm, BaseAlgorithmConfig
@@ -28,8 +26,6 @@ import os
 import re
 
 # Typing Aliases
-from mpi_rl.utils import MPIArchitectureConfig
-
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Path_Without_NameT, MessagesT, \
     Input_SequenceT, Invoker_outputT, Kto_Rollout_StatisticsT, BaseInvoker, JsonableT
 
