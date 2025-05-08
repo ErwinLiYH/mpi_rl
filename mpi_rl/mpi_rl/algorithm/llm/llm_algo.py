@@ -19,6 +19,7 @@ from mpi_rl.utils import chunk
 
 from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate, TeachTemplate
 from mpi_rl.utils import remove_first_line
+from mpi_rl.mpi_rl.algorithm.llm.llm_utils import make_conversation
 
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -147,7 +148,7 @@ class LLM(BaseAlgorithm):
         # record
         if self.algorithm_config.record_conversation:
             with open(f"{os.path.join(self.algorithm_config.record_conversation, self.name)}_compute_act_{self.status}_history.txt", 'a') as f:
-                conversation = self.make_conversation(
+                conversation = make_conversation(
                     input_sequence, reasoning_content, content, "None", input_len, output_len
                 )
                 f.write(conversation)
@@ -235,7 +236,7 @@ class LLM(BaseAlgorithm):
                     f"{os.path.join(self.algorithm_config.record_conversation, self.name)}_reflex_iter{it}_ep{idx}_history.txt",
                     'a'
                 ) as f:
-                    conversation = self.make_conversation(
+                    conversation = make_conversation(
                         input_sequence, reasoning_content, content, "None", input_len, output_len
                     )
                     f.write(conversation)
@@ -497,7 +498,7 @@ class LLM(BaseAlgorithm):
                         f"kto_teach_ep{ep_idx}_step{trans_idx}_history.txt",
                         )
                     with open(file_name,'a') as f:
-                        conversation = self.make_conversation(
+                        conversation = make_conversation(
                             (input_sequence if rollout_statistics["total_times"]==1 else None), reasoning_content,
                             content, "None", input_len, output_len, remark
                         )
@@ -547,26 +548,6 @@ class LLM(BaseAlgorithm):
                 self.mpi_architecture_config.group_comm.broadcast(self.policy_conclusion, root=0)
 
     # ----------------- LLM algorithm specific functions -----------------
-
-    def make_conversation(self, input_sequence, reasoning_content, content, expected_input_token_count, input_len, output_len, remark=None):
-        conversation = ""
-        if input_sequence is not None:
-            conversation = "User:\n\n" \
-                        + input_sequence + "\n" \
-                        + "-"*50 + "\n"
-        if reasoning_content is not None:
-            conversation = conversation \
-                            + "Reasoning:\n\n" \
-                            + reasoning_content + "\n" \
-                            + "-"*50 + "\n"
-        conversation = conversation \
-                        + "Assistant:\n\n" \
-                        + content + "\n" \
-                        + "-"*50 + "\n" \
-                        + f"< expected input tokens: {expected_input_token_count}, input tokens: {input_len}, output tokens: {output_len} >\n" \
-                        + (f"< remark: {remark} >\n" if remark!=None else "") \
-                        + "<"*25 + ">"*25 + "\n"
-        return conversation
     
     def replay_buffer_to_str(self, replay_buffer:ReplayBuffer, process_fn:Callable=None, **kwargs):
         """

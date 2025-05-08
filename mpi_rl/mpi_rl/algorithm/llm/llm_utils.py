@@ -272,3 +272,25 @@ def json_filter2(
     content_r = content.replace("```json", "").replace("```", "")
     data = json5.loads(content_r)
     return data
+
+# ------------------ Others ------------------
+
+def make_conversation(input_sequence, reasoning_content, content, expected_input_token_count, input_len, output_len, remark=None):
+    conversation = ""
+    if input_sequence is not None:
+        conversation = "User:\n\n" \
+                    + input_sequence + "\n" \
+                    + "-"*50 + "\n"
+    if reasoning_content is not None:
+        conversation = conversation \
+                        + "Reasoning:\n\n" \
+                        + reasoning_content + "\n" \
+                        + "-"*50 + "\n"
+    conversation = conversation \
+                    + "Assistant:\n\n" \
+                    + content + "\n" \
+                    + "-"*50 + "\n" \
+                    + f"< expected input tokens: {expected_input_token_count}, input tokens: {input_len}, output tokens: {output_len} >\n" \
+                    + (f"< remark: {remark} >\n" if remark!=None else "") \
+                    + "<"*25 + ">"*25 + "\n"
+    return conversation
