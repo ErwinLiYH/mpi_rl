@@ -1,11 +1,41 @@
 import re
-from typing import Literal
+from typing import Literal, Optional
 import textwrap
 
-def safe_escape(text):
-    # This function is used to escape the curly braces in the text
-    # by doubling them, so that they are not interpreted as format specifiers
-    return re.sub(r'(?<!\{)\{(?!\{)|(?<!\})\}(?!\})', lambda m: m.group() * 2, text)
+def safe_escape(text, exempt=Optional[list[str]|str]):
+    """
+    Escape curly braces in text by doubling them, exempting specified placeholders.
+    
+    Args:
+        text (str): Text to escape.
+        exempt (list, optional): List of placeholder names to exempt from escaping.
+            For example, if exempt=["a", "b"], the placeholders {a} and {b} will not be escaped.
+            Defaults to None.
+    
+    Returns:
+        str: Escaped text with specified exemptions.
+    """
+    if exempt is None or not exempt:
+        # Use the original logic if no exemptions
+        return re.sub(r'(?<!\{)\{(?!\{)|(?<!\})\}(?!\})', lambda m: m.group() * 2, text)
+    # Create a list of placeholder patterns and their replacements
+    if isinstance(exempt, str):
+        exempt = [exempt]
+    placeholders = []
+    for i, name in enumerate(exempt):
+        placeholder = f"{{{name}}}"
+        replacement = f"__PLACEHOLDER_{i}__"
+        placeholders.append((placeholder, replacement))
+    # Replace exempted placeholders with temporary markers
+    temp_text = text
+    for placeholder, replacement in placeholders:
+        temp_text = temp_text.replace(placeholder, replacement)
+    # Apply normal escaping to the text with markers
+    escaped_text = re.sub(r'(?<!\{)\{(?!\{)|(?<!\})\}(?!\})', lambda m: m.group() * 2, temp_text)
+    # Restore exempted placeholders
+    for placeholder, replacement in placeholders:
+        escaped_text = escaped_text.replace(replacement, placeholder)
+    return escaped_text
 
 class ActTemplate:
     def __init__(self, system_desc:str, act_prompt:str, language:Literal["zh", "en"] = "zh"):
