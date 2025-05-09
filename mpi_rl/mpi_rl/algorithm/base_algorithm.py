@@ -3,9 +3,6 @@ from mpi_rl.config import get_use_mpi
 if get_use_mpi():
     from mpi4py import MPI
     from mpi_rl.mpi_utils.mpi_architecture_config import MPIArchitectureConfig
-else:
-    from mpi_rl.utils import MPI  # fake MPI
-    from mpi_rl.utils import MPIArchitectureConfig  # fake MPIArchitectureConfig
 # --------------------------------------
 
 from mpi_rl import config

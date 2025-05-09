@@ -6,8 +6,6 @@ from functools import reduce
 import time
 from typing import Callable, Iterable, Type, Union, Any, TypeVar
 
-MPIArchitectureConfig = TypeVar("MPIArchitectureConfig")   # Type alias for fake architecture config
-MPI = TypeVar("MPI")   # Type alias for fake MPI
 
 def get_env_type(env):
     if isinstance(env, gym.Env):
