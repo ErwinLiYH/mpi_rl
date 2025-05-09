@@ -112,27 +112,3 @@ class ReflexTemplate:
             episode = safe_escape(episode),
             episode_metrics = safe_escape(episode_metrics)
         )
-    
-class TeachTemplate:
-    def __init__(self, system_desc:str, teach_prompt:str):
-        self.template = """\
-{system_desc}
-{partial_episode}
-{reasoning_content}
-{original_action_analysis}
-{reflection}
-{teach_prompt}""".format(
-            system_desc = safe_escape(system_desc),
-            teach_prompt = safe_escape(teach_prompt),
-            reasoning_content = "{reasoning_content}",
-            partial_episode = "{partial_episode}",
-            original_action_analysis = "{original_action_analysis}",
-            reflection = "{reflection}"
-        )
-    def format(self, partial_episode:str, reasoning_content: str, original_action_analysis:str, reflection:str) -> str:
-        return self.template.format(
-            partial_episode = safe_escape(partial_episode),
-            reasoning_content = safe_escape(reasoning_content),
-            original_action_analysis = safe_escape(original_action_analysis),
-            reflection = safe_escape(reflection)
-        )
