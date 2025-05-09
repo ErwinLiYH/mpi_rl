@@ -18,7 +18,6 @@ from mpi_rl.utils.config_helper import RolloutConfig
 from mpi_rl.utils import chunk
 
 from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate, TeachTemplate
-from mpi_rl.utils import remove_first_line
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import make_conversation
 
 from concurrent.futures import ThreadPoolExecutor
@@ -103,8 +102,6 @@ class LLM(BaseAlgorithm):
             )
         
         self.check_config()
-
-        self.policy_conclusion = None
 
         if self.algorithm_config.system_description_in_user:
             self.act_template = ActTemplate(algorithm_config.system_description, algorithm_config.act_prompt)
