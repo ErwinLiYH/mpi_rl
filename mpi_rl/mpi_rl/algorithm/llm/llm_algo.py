@@ -17,7 +17,7 @@ from mpi_rl.utils.replay_buffer import Episode, ReplayBuffer, Transaction
 from mpi_rl.utils.config_helper import RolloutConfig
 from mpi_rl.utils import chunk
 
-from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate, TeachTemplate
+from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import make_conversation
 
 from concurrent.futures import ThreadPoolExecutor
@@ -106,12 +106,10 @@ class LLM(BaseAlgorithm):
         if self.algorithm_config.system_description_in_user:
             self.act_template = ActTemplate(algorithm_config.system_description, algorithm_config.act_prompt)
             self.reflex_template = ReflexTemplate(algorithm_config.system_description, algorithm_config.reflex_prompt)
-            self.teach_template = TeachTemplate(algorithm_config.system_description, algorithm_config.teach_prompt)
             self.system_prompt = self.algorithm_config.system_prompt
         else:
             self.act_template = ActTemplate("", algorithm_config.act_prompt)
             self.reflex_template = ReflexTemplate("", algorithm_config.reflex_prompt)
-            self.teach_template = TeachTemplate("", algorithm_config.teach_prompt)
             if self.algorithm_config.system_prompt != "" and isinstance(self.algorithm_config.system_prompt, str):
                 self.system_prompt = self.algorithm_config.system_prompt + "\n\n" + self.algorithm_config.system_description
             else:
