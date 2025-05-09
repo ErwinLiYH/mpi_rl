@@ -85,7 +85,6 @@ class LLM(BaseAlgorithm):
             eval_interval:int = 1,
             mpi_architecture_config:MPIArchitectureConfig = None,
             log_paths:List[str] = ["print"],
-            multi_agent:bool = False,
             transaction_process_fn:Callable = None,
             ):
         super().__init__(
@@ -99,7 +98,7 @@ class LLM(BaseAlgorithm):
             eval_interval = eval_interval,
             mpi_architecture_config = mpi_architecture_config,
             log_paths = log_paths,
-            multi_agent = multi_agent,
+            multi_agent = False,
             transaction_process_fn = transaction_process_fn
             )
         
