@@ -176,7 +176,7 @@ class LLM(BaseAlgorithm):
 
         self.finetune_actor()
 
-    def reflex(self, episode: Episode, idx:int):
+    def reflex(self, episode: Episode, ep_idx, agent=None):
         metrics_dict = self.algorithm_config.metrics_statistics_fn(episode)
 
         episode_metrics = json.dumps(metrics_dict)
@@ -214,6 +214,7 @@ class LLM(BaseAlgorithm):
 
             content, llm_reflex, reasoning_content, input_len, output_len = self.invoke_api(input_sequence, reflex=True)
 
+            idx = f"{ep_idx}_{agent}" if agent is not None else ep_idx
             self.logger.info(f"Reflex - Episode {idx} - Step {win_start} to {win_end}")
             
             for i, ref in enumerate(llm_reflex):
@@ -234,15 +235,16 @@ class LLM(BaseAlgorithm):
         # TODO: implement kto iterations here
         pass
 
-    def kto_iteration(self, episode: Episode, ep_idx:int, kto_it_idx:int):
+    def kto_iteration(self, episode: Episode, invokers:List[BaseInvoker]|BaseInvoker, ep_idx, kto_it_idx:int, agent=None):
         """"rollout kto data"""
         # make folder to record conversation
+        ep_idx_str = f"{ep_idx}_{agent}" if agent is not None else ep_idx
         it = self.progress_info["current_iteration"] # train iteration
         if self.algorithm_config.record_conversation:
             os.makedirs(os.path.join(self.algorithm_config.record_conversation, f"{self.name}_iter{it}", f"kto_iter{kto_it_idx}"), exist_ok=True)
         # human refine data
         if self.algorithm_config.kto_human_refine:
-            self.kto_human_refine(episode, ep_idx)
+            self.kto_human_refine(episode, ep_idx, agent)
         # rollout kto data
         final_data = []
         unfinished_transactions = []
@@ -276,7 +278,7 @@ class LLM(BaseAlgorithm):
                         }
                     ],
                     "step": trans["index_in_episode"],
-                    "episode_index": ep_idx,
+                    "episode_index": ep_idx_str,
                     "iteration": self.progress_info["current_iteration"],
                     "kto_tag": True
                 })
@@ -285,14 +287,14 @@ class LLM(BaseAlgorithm):
             else:
                 pass
         if len(unfinished_transactions) == 0:
-            self.logger.info(f"All transactions in episode {ep_idx} are finished.")
+            self.logger.info(f"All transactions in episode {ep_idx_str} are finished.")
             return None
         else:
-            self.logger.info(f"Number of unfinished transactions in episode {ep_idx}: {len(unfinished_transactions)}")
+            self.logger.info(f"Number of unfinished transactions in episode {ep_idx_str}: {len(unfinished_transactions)}")
             for unfinished_transaction in unfinished_transactions:
                 self.logger.info(f"Unfinished transaction: {unfinished_transaction['index_in_episode']}")
-        if isinstance(self.algorithm_config.teach_invoke_fn, list) and len(self.algorithm_config.teach_invoke_fn)>1:  # multi-thread mode
-            n_thread = len(self.algorithm_config.teach_invoke_fn)
+        if isinstance(invokers, list) and len(invokers)>1:  # multi-thread mode
+            n_thread = len(invokers)
             self.logger.info(f"Got {n_thread} invokers, using multi-thread mode for KTO.")
             # separate the unfinished transactions into n_thread parts
             unfinished_transactions_lst = chunk(unfinished_transactions, n_thread)
@@ -302,10 +304,11 @@ class LLM(BaseAlgorithm):
                     executor.submit(
                         self.kto_episode, 
                         unfinished_transactions_lst[i],
-                        self.algorithm_config.teach_invoke_fn[i],
+                        invokers[i],
                         ep_idx,
                         i,
-                        kto_it_idx
+                        kto_it_idx,
+                        agent
                     ) for i in range(n_thread)
                 ]
                 res = [future.result() for future in futures]
@@ -313,29 +316,30 @@ class LLM(BaseAlgorithm):
                     final_data.extend(r)
         else: # single-thread mode
             self.logger.info(f"Got 1 invoker, using single-thread mode for KTO.")
-            if isinstance(self.algorithm_config.teach_invoke_fn, list):
-                teach_invoke_fn = self.algorithm_config.teach_invoke_fn[0]
+            if isinstance(invokers, list):
+                teach_invoke_fn = invokers[0]
             else:
-                teach_invoke_fn = self.algorithm_config.teach_invoke_fn
-            final_data = self.kto_episode(unfinished_transactions, teach_invoke_fn, ep_idx, kto_it_idx)
+                teach_invoke_fn = invokers
+            final_data = self.kto_episode(unfinished_transactions, teach_invoke_fn, ep_idx, kto_it_idx, agent)
         # log final situation in this Kto iteration
         rollout_total = 0
         finished_num = 0
         for trans in unfinished_transactions:
-            self.logger.info(f"Episode {ep_idx} - Step {trans['index_in_episode']} - {trans['transaction']['reflex']['reflection']['kto_remark']}")
+            self.logger.info(f"Episode {ep_idx_str} - Step {trans['index_in_episode']} - {trans['transaction']['reflex']['reflection']['kto_remark']}")
             rollout_total += 1
             if trans["transaction"]["reflex"]["reflection"].get("kto_finished", False):
                 finished_num += 1
-        self.logger.info(f"Episode {ep_idx} - Kto iteration {kto_it_idx} - Finished {finished_num}/{rollout_total} transactions.")
+        self.logger.info(f"Episode {ep_idx_str} - Kto iteration {kto_it_idx} - Finished {finished_num}/{rollout_total} transactions.")
         # save json data to file
         data_dir = os.path.join(self.algorithm_config.fine_tune_data_path, f"{self.name}_iter{it}")
         os.makedirs(data_dir, exist_ok=True) # guarantee the directory exists
-        file_name = os.path.join(data_dir, f"kto_finetune_iter{kto_it_idx}_ep{ep_idx}.json")
+        file_name = os.path.join(data_dir, f"kto_finetune_iter{kto_it_idx}_ep{ep_idx_str}.json")
         with open(file_name, 'w') as f:
             json.dump(final_data, f, indent=4, sort_keys=False, ensure_ascii=False, default=str)
         return file_name, finished_num, rollout_total
     
-    def kto_human_refine(self, episode: Episode, ep_idx:int):
+    def kto_human_refine(self, episode: Episode, ep_idx, agent=None):
+        ep_idx = f"{ep_idx}_{agent}" if agent is not None else ep_idx
         it = self.progress_info["current_iteration"] # train iteration
         file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_kto_human_refine_iter{it}_{ep_idx}.txt"
 
@@ -378,14 +382,15 @@ class LLM(BaseAlgorithm):
                 episode[step]["transaction"]["reflex"]["reflection"]["human_good"] = human_good
                 self.logger.info(f"Step {step} - {original_action} - Human suggested action: {human_suggested_action}, Good: {human_good}")
     
-    def kto_episode(self, transactions: list[Transaction], invoker:BaseInvoker, ep_idx:int, thread_idx:int=0, kto_it_idx:int=0):
+    def kto_episode(self, transactions: list[Transaction], invoker:BaseInvoker, ep_idx, thread_idx:int=0, kto_it_idx:int=0, agent=None):
         final_data = []
         for trans in transactions:
-            data = self.kto_transaction(trans["transaction"], invoker, trans["index_in_episode"], ep_idx, thread_idx, kto_it_idx)
+            data = self.kto_transaction(trans["transaction"], invoker, trans["index_in_episode"], ep_idx, thread_idx, kto_it_idx, agent)
             final_data.extend(data)
         return final_data
 
-    def kto_transaction(self, transaction:Transaction, invoker:BaseInvoker, trans_idx:int, ep_idx:int, thread_idx:int=0, kto_it_idx:int=0):
+    def kto_transaction(self, transaction:Transaction, invoker:BaseInvoker, trans_idx:int, ep_idx, thread_idx:int=0, kto_it_idx:int=0, agent=None):
+        ep_idx = f"{ep_idx}_{agent}" if agent is not None else ep_idx
         kto_finished = transaction["reflex"]["reflection"].get("kto_finished", False)
         if kto_finished:
             return []
