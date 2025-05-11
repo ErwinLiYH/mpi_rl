@@ -430,7 +430,6 @@ llm_algo = LLM(
     eval_rollout_config = eval_rollout_config,
     replay_buffer = replay,
     algorithm_config = llm_config,
-    multi_agent = False,
     log_paths = ["print", prj_path_join("llm_algo.log")],
 )
 
