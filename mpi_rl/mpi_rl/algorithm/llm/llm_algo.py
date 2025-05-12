@@ -13,7 +13,7 @@ from mpi_rl.utils.config_helper import RolloutConfig
 from mpi_rl.utils import chunk
 
 from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate
-from mpi_rl.mpi_rl.algorithm.llm.llm_utils import make_conversation
+from mpi_rl.mpi_rl.algorithm.llm.llm_utils import make_conversation, LLMManager
 
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -51,10 +51,17 @@ class LLMConfig(BaseAlgorithmConfig):
     reflex_specific_transaction_process_fn: Optional[Callable[[Transaction], JsonableT]] = None
     fine_tune_data_path: Optional[Path_Without_NameT] = None
     action_offset:float = 0
+    node_configs: Optional[dict] = None # can't use train() if None
+    run_name: Optional[str] = None
+    initial_train_config_path: Optional[str] = None
+    initial_merge_config_path: Optional[str] = None
     kto_rollout_stop_fn: Callable[[Kto_Rollout_StatisticsT], bool] = lambda x: x["total_times"] >= 20
     kto_human_refine:bool = False
     kto_finish_check_fn: Callable[[Kto_Rollout_StatisticsT], bool] = lambda x: x["good_times"] > 0
     kto_specified_transaction_process_fn: Callable[[Transaction], JsonableT] = lambda x: x
+    kto_max_iteration:int = 5
+    kto_early_stop_check_iteration:int = 2
+    skip_reflex: bool = False
 
     def __post_init__(self):
         if self.record_conversation is not None:
@@ -62,6 +69,17 @@ class LLMConfig(BaseAlgorithmConfig):
 
         if self.fine_tune_data_path is not None:
             os.makedirs(self.fine_tune_data_path, exist_ok=True)
+
+        if self.run_name is None:
+            # init using datetime
+            from datetime import datetime
+            self.run_name = f"lrl_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        if self.initial_train_config_path is None:
+            self.warning("initial_train_config_path is None, will raise error when fine-tune.")
+
+        if self.initial_merge_config_path is None:
+            self.warning("initial_merge_config_path is None, will raise error when fine-tune.")
 
 class LLM(BaseAlgorithm):
     """
@@ -98,6 +116,10 @@ class LLM(BaseAlgorithm):
         
         self.check_config()
 
+        self.init_llm_manager()
+
+        self.init_llm()
+
         if self.algorithm_config.system_description_in_user:
             self.act_template = ActTemplate(algorithm_config.system_description, algorithm_config.act_prompt)
             self.reflex_template = ReflexTemplate(algorithm_config.system_description, algorithm_config.reflex_prompt)
@@ -110,8 +132,34 @@ class LLM(BaseAlgorithm):
             else:
                 self.system_prompt = self.algorithm_config.system_description
 
+        self.logger.info(f"Run name: {self.algorithm_config.run_name}")
+
     def check_config(self):
         assert isinstance(self.algorithm_config, LLMConfig), "algorithm_config should be LLMConfig."
+
+    def init_llm_manager(self):
+        if self.algorithm_config.node_configs is not None:
+            self.llm_manager = LLMManager(self.algorithm_config.node_configs)
+            self.current_model_path = self.algorithm_config.node_configs[0]["processes"][0]["model_path"]
+        else:
+            self.llm_manager = None
+            self.logger.warning("No node_configs found, can't init LLMmanager")
+
+    def init_llm(self):
+        # initialize LLMs
+        # LLMs will be closed in in self.fintune_actor()
+        def init():
+            if self.llm_manager is None:
+                self.logger.warning("No LLMManager found, can't manager LLMs automatically.")
+            else:
+                self.logger.info("Initializing LLMs...")
+                self.llm_manager.start_nodes()
+                self.llm_manager.wait_route()
+        if self.mpi_architecture_config is not None:
+            if self.mpi_architecture_config.global_rank == 0:
+                init()
+        else:
+            init()
 
     def compute_action(self, obs):
         episode_str = self.episode_to_str(
@@ -160,21 +208,27 @@ class LLM(BaseAlgorithm):
         with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_ori.pkl"),'wb') as f:
             pickle.dump(episodes, f)
 
-        fine_tune_data_path_list = []
-        for idx, ep in enumerate(episodes):
-            self.reflex(ep, idx)
+        if not self.algorithm_config.skip_reflex:
+            for idx, ep in enumerate(episodes):
+                self.reflex(ep, idx)
+        else:
+            # if skip reflex, we add empty reflex field to the transaction
+            self.logger.info("Skip reflex, add empty reflex field to the transaction")
+            for ep in episodes:
+                for trans in ep:
+                    trans["transaction"]["reflex"] = {"reflection":{}}
         with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_reflex.pkl"),'wb') as f:
             pickle.dump(episodes, f)
+        
+        # human refine data
+        for idx, ep in enumerate(episodes):
+            if self.algorithm_config.kto_human_refine:
+                self.kto_human_refine(ep, idx)
+        # teach
         for idx, ep in enumerate(episodes):
             self.teach(ep, idx)
-            fine_tune_data_path_list.append(self.build_finetune_instruction(ep, idx))
-
-        # TODO: move this to post train
-        # save episodes for test
-        with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_reflex_teach.pkl"),'wb') as f:
-            pickle.dump(episodes, f)
-
-        self.finetune_actor()
+            with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_teach.pkl"),'wb') as f:
+                pickle.dump(episodes, f)
 
     def reflex(self, episode: Episode, ep_idx, agent=None):
         metrics_dict = self.algorithm_config.metrics_statistics_fn(episode)
@@ -231,9 +285,64 @@ class LLM(BaseAlgorithm):
                     )
                     f.write(conversation)
     
-    def teach(self, episode: Episode, ep_idx:int):
-        # TODO: implement kto iterations here
-        pass
+    def teach(self, episode: Episode, ep_idx:int, agent=None):
+        kto_iter = 0
+        finetune_files = []
+        promising_num_list = []
+        finished_num_list = []
+        total_rollout = []
+        ep_idx_str = f"{ep_idx}_{agent}" if agent is not None else ep_idx
+        while True:
+            # begin to rollout kto data
+            self.logger.info(f"Begin KTO iteration {kto_iter} for episode {ep_idx_str} ...")
+            filename, finished_num, promising_num, rollout_total = self.kto_iteration(
+                episode,
+                self.algorithm_config.teach_invoke_fn,
+                ep_idx,
+                self.progress_info["current_iteration"],
+                agent=agent
+            )
+            finetune_files.append(filename)
+            kto_iter += 1
+
+            ## close the LLMs
+            self.logger.info("Closing LLMs...")
+            self.llm_manager.stop_nodes()
+
+            ## fine-tune the LLMs
+            self.logger.info(f"Begin to fine-tune LLMs with {filename}...")
+            new_model_path = self.finetune_actor([filename])
+
+            ## update the model path
+            self.logger.info(f"Update the model path to {new_model_path}...")
+            self.llm_manager.change_model_path(new_model_path)
+
+            ## open the LLMs for next kto iteration / or next episode / next train iteration
+            self.logger.info("Opening LLMs...")
+            self.logger.info(self.llm_manager.nodes_config)
+            self.llm_manager.start_nodes()
+            self.llm_manager.wait_route()
+
+            promising_num_list.append(promising_num)
+            finished_num_list.append(finished_num)
+            total_rollout.append(rollout_total)
+
+            # check if all transactions are finished
+            if rollout_total == 0:
+                self.logger.info(f"KTO stop - Reason: all transactions in episode {ep_idx_str} are finished.")
+                break
+
+            # check if reach max iteration
+            if kto_iter == self.algorithm_config.kto_max_iteration:
+                self.logger.info(f"KTO stop - Reason: max iteration {self.algorithm_config.kto_max_iteration} reached in Episode {ep_idx_str}.")
+                break
+            
+            # early stop check
+            if sum([1]+promising_num_list[-self.algorithm_config.kto_early_stop_check_iteration:]) == 0 and \
+                sum([1]+finished_num_list[-self.algorithm_config.kto_early_stop_check_iteration:]) == 0:
+                # Plus [1] at beginning to avoid situation that promising_num and finished_num are both 0 at first iteration
+                self.logger.info(f"KTO stop - Reason: no promising transactions in the last {self.algorithm_config.kto_early_stop_check_iteration} iterations in Episode {ep_idx_str}.")
+                break
 
     def kto_iteration(self, episode: Episode, invokers:List[BaseInvoker]|BaseInvoker, ep_idx, kto_it_idx:int, agent=None):
         """"rollout kto data"""
@@ -242,9 +351,6 @@ class LLM(BaseAlgorithm):
         it = self.progress_info["current_iteration"] # train iteration
         if self.algorithm_config.record_conversation:
             os.makedirs(os.path.join(self.algorithm_config.record_conversation, f"{self.name}_iter{it}", f"kto_iter{kto_it_idx}"), exist_ok=True)
-        # human refine data
-        if self.algorithm_config.kto_human_refine:
-            self.kto_human_refine(episode, ep_idx, agent)
         # rollout kto data
         final_data = []
         unfinished_transactions = []
@@ -288,7 +394,7 @@ class LLM(BaseAlgorithm):
                 pass
         if len(unfinished_transactions) == 0:
             self.logger.info(f"All transactions in episode {ep_idx_str} are finished.")
-            return None
+            return None, 0, 0, 0
         else:
             self.logger.info(f"Number of unfinished transactions in episode {ep_idx_str}: {len(unfinished_transactions)}")
             for unfinished_transaction in unfinished_transactions:
@@ -324,19 +430,22 @@ class LLM(BaseAlgorithm):
         # log final situation in this Kto iteration
         rollout_total = 0
         finished_num = 0
+        promising_num = 0
         for trans in unfinished_transactions:
             self.logger.info(f"Episode {ep_idx_str} - Step {trans['index_in_episode']} - {trans['transaction']['reflex']['reflection']['kto_remark']}")
             rollout_total += 1
             if trans["transaction"]["reflex"]["reflection"].get("kto_finished", False):
                 finished_num += 1
-        self.logger.info(f"Episode {ep_idx_str} - Kto iteration {kto_it_idx} - Finished {finished_num}/{rollout_total} transactions.")
+            if trans["transaction"]["reflex"]["reflection"].get("kto_promising", False):
+                promising_num += 1
+        self.logger.info(f"Episode {ep_idx_str} - Kto iteration {kto_it_idx} - Finished {finished_num}/{rollout_total} transactions, {promising_num}/{rollout_total} promising transactions.")
         # save json data to file
         data_dir = os.path.join(self.algorithm_config.fine_tune_data_path, f"{self.name}_iter{it}")
         os.makedirs(data_dir, exist_ok=True) # guarantee the directory exists
         file_name = os.path.join(data_dir, f"kto_finetune_iter{kto_it_idx}_ep{ep_idx_str}.json")
         with open(file_name, 'w') as f:
             json.dump(final_data, f, indent=4, sort_keys=False, ensure_ascii=False, default=str)
-        return file_name, finished_num, rollout_total
+        return file_name, finished_num, promising_num, rollout_total
     
     def kto_human_refine(self, episode: Episode, ep_idx, agent=None):
         ep_idx = f"{ep_idx}_{agent}" if agent is not None else ep_idx
@@ -344,8 +453,6 @@ class LLM(BaseAlgorithm):
         file_name = f"{os.path.join(self.algorithm_config.fine_tune_data_path, self.name)}_kto_human_refine_iter{it}_{ep_idx}.txt"
 
         if not os.path.exists(file_name):
-            with open(file_name, 'w') as f:
-                f.write(s)
             str_list = []
             for i in range(len(episode)):
                 reflection = episode[i]["transaction"]["reflex"]["reflection"]
@@ -361,6 +468,8 @@ class LLM(BaseAlgorithm):
                 str_list.append(json_str)
             s = "\n".join(str_list)
             # save s to file
+            with open(file_name, 'w') as f:
+                f.write(s)
 
             print(f"Please edit the file {file_name} to add human suggested action.")
             input("Edit the file and press Enter to continue...")
@@ -509,21 +618,112 @@ class LLM(BaseAlgorithm):
                         reflex["reflection"]["kto_actions"].append(kto_actions)
                     else:
                         reflex["reflection"]["kto_actions"] = [kto_actions]
+
+                    if rollout_statistics["good_times"] > 0:
+                        reflex["reflection"]["kto_promising"] = True
+                    else:
+                        reflex["reflection"]["kto_promising"] = False
                     break
         return data
 
-    def finetune_actor(self, episodes: list[Episode]):
-        # make data for finetune
-        finetune_conversation = []
-        for ep in episodes:
-            finetune_conversation.extend(self.build_finetune_conversation(ep))
-        
-        # begin finetune
-        ## stop current model
+    def finetune_actor(self, file_names:List[str]):
+        if self.llm_manager is None:
+            self.logger.warning("No LLMManager found, can't manager LLMs automatically.")
+            return None
+        else:
+            # use the first node to finetune
+            finetune_client = self.llm_manager.nodes_config[0]["client"]
 
-        ## finetune
+            # upload the fine-tune data
+            self.logger.info("Uploading fine-tune data...")
+            save_paths = []
+            for file_name in file_names:
+                filename = os.path.basename(file_name)
+                save_path = f"data/{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}/{filename}"
+                save_paths.append(save_path)
+                self.logger.info(f"Uploading {file_name} to {save_path}...")
+                finetune_client.upload_data_file(file_name, save_path, timeout=1800)
 
-        ## start finetuned model
+            # upload example configs
+            train_config_path = f"examples/train_lora/{self.algorithm_config.run_name}_train_config.yaml"
+            merge_config_path = f"examples/merge_lora/{self.algorithm_config.run_name}_merge_config.yaml"
+
+            if self.progress_info["current_iteration"] == 0:
+                self.logger.info("Uploading example configs...")
+                self.logger.info(f"Uploading {self.algorithm_config.initial_merge_config_path} to {train_config_path}")
+                finetune_client.upload_data_file(
+                    self.algorithm_config.initial_train_config_path,
+                    train_config_path,
+                    timeout=1800
+                )
+                self.logger.info(f"Uploading {self.algorithm_config.initial_merge_config_path} to {merge_config_path}")
+                finetune_client.upload_data_file(
+                    self.algorithm_config.initial_merge_config_path,
+                    merge_config_path,
+                    timeout=1800
+                )
+
+            # update configs
+            ## update dataset.json
+            dataset_config = {
+                f"kto_finetune_{i}": {
+                    "file_name": p.lstrip("data/"),
+                    "formatting": "sharegpt",
+                    "columns": {
+                    "messages": "conversations",
+                    "kto_tag": "kto_tag"
+                    }
+                } for i, p in enumerate(save_paths)
+            }
+            self.logger.info(f"Updating dataset_info.json")
+            finetune_client.update_json_config(
+                "data/dataset_info.json",
+                dataset_config
+            )
+            if len(dataset_config) > 1:
+                dataset_str = ",".join(dataset_config.keys())
+            else:
+                dataset_str = list(dataset_config.keys())[0]
+
+            ## update train config
+            output_dir = f"saves/{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}"
+            train_config = {
+                "model_name_or_path": self.current_model_path,
+                "dataset": dataset_str,
+                "output_dir": output_dir,
+                "run_name": self.algorithm_config.run_name,
+            }
+            finetune_client.update_yaml_config(
+                train_config_path,
+                train_config
+            )
+
+            ## update merge config
+            export_dir = f"output/{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}"
+            merge_config = {
+                "model_name_or_path": self.current_model_path,
+                "adapter_name_or_path": output_dir,
+                "export_dir": export_dir,
+            }
+            finetune_client.update_yaml_config(
+                merge_config_path,
+                merge_config
+            )
+
+            # get the configs
+            train_config_check = finetune_client.get_config(train_config_path)
+            self.logger.info(f"Train config: {train_config_check}")
+            merge_config_check = finetune_client.get_config(merge_config_path)
+            self.logger.info(f"Merge config: {merge_config_check}")
+
+            # fine-tune the LLMs
+            self.logger.info("Fine-tuning LLMs...")
+            finetune_client.run_command(
+                f"FORCE_TORCHRUN=1 llamafactory-cli train {train_config_path} && llamafactory-cli export {merge_config_path}",
+                process_id = f"finetune_{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}",
+            )
+
+            return export_dir
 
     def post_train(self):
         """

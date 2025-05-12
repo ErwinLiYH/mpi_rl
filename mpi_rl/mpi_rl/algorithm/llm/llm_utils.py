@@ -4,6 +4,9 @@ from typing import Callable, Any, Optional, List, TypeVar
 import time
 import json5
 from mpi_rl.utils import SpeedCalculator
+from mpi_rl.config import get_use_mpi
+from llf_server.llamafactory_server_call import LLamaFactoryClient
+import multiprocessing
 
 # ------------------ Typing Alias ------------------
 
@@ -294,3 +297,82 @@ def make_conversation(input_sequence, reasoning_content, content, expected_input
                     + (f"< remark: {remark} >\n" if remark!=None else "") \
                     + "<"*25 + ">"*25 + "\n"
     return conversation
+
+class LLMManager:
+    def __init__(self, nodes_config: List[dict]):
+        self.nodes_config = nodes_config
+        for node in nodes_config:
+            server_url = node["server_url"]
+            client = LLamaFactoryClient(server_url)
+            node["client"] = client
+        self.processes = []
+
+    def start_nodes(self, output_file: Optional[str] = None, process_id: Optional[str] = None):
+        def run(client, command, output_file, print_output, process_id):
+            pid = None
+            try:
+                while True:
+                    try:
+                        print(f"debug Request to run command: {command}")
+                        process_id, pid, resp = client.run_command_bg(command)
+                        print(f"debug Process ID: {process_id}, PID: {pid}, command: {command}")
+                        break
+                    except Exception as e:
+                        print("debug Error {e} in run command {command}, retrying...")
+                        time.sleep(1)
+                client.watch_bg_command(
+                    resp,
+                    output_file=output_file,
+                    print_output=print_output,
+                    process_id=process_id,
+                )
+            except Exception as e:
+                print(f"debug Error in run command {command}: {e}")
+                if pid:
+                    print(f"debug Error {e} in run command {command}, killing process {pid}")
+                    client.kill_process(pid)
+        
+        for i, node in enumerate(self.nodes_config):
+            for j, process in enumerate(node["processes"]):
+                command = node["up_command"].format(**process)
+                print(f"running command: {command}")
+                self.processes.append(
+                    multiprocessing.Process(
+                        target=run,
+                        kwargs={
+                            "client": node["client"],
+                            "command": command,
+                            "output_file": output_file.format(n_idx=i, p_idx=j) if output_file else None,
+                            "print_output": False,
+                            "process_id": process_id.format(n_idx=i, p_idx=j) if process_id else None,
+                        },
+                        daemon=True,  # Will terminate automatically when the main process terminates
+                    )
+                )
+        for p in self.processes:
+            p.start()
+            print(f"Started process {p.pid}")
+
+    def stop_nodes(self):
+        for p in self.processes:
+            print(f"Stopping process {p.pid}")
+            p.terminate()
+            p.join()
+        self.processes = []
+
+    def wait_route(self):
+        for node in self.nodes_config:
+            for route in node["wait_routes"]:
+                while True:
+                    try:
+                        response = requests.get(route)
+                        if response.status_code == 200:
+                            break
+                    except requests.exceptions.RequestException as e:
+                        time.sleep(1)
+
+    def change_model_path(self, new_model_path: str, model_path_key: str = "model_path"):
+        for node in self.nodes_config:
+            for process in node["processes"]:
+                process[model_path_key] = new_model_path
+                
