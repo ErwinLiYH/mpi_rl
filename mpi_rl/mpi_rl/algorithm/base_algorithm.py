@@ -65,7 +65,7 @@ class BaseAlgorithm:
         self.multi_agent = multi_agent
 
         if self.mpi_architecture_config is not None:
-            self.name = f"g{self.mpi_architecture_config.group}_r{self.mpi_architecture_config.group_rank}_{self.mpi_architecture_config.role}"
+            self.name = f"g{self.mpi_architecture_config.group}_r{self.mpi_architecture_config.group_rank}_{'-'.join(self.mpi_architecture_config.role)}"
         else:
             self.name = "main"
 

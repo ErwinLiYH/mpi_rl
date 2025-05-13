@@ -313,12 +313,9 @@ class LLMManager:
             try:
                 while True:
                     try:
-                        print(f"debug Request to run command: {command}")
                         process_id, pid, resp = client.run_command_bg(command)
-                        print(f"debug Process ID: {process_id}, PID: {pid}, command: {command}")
                         break
                     except Exception as e:
-                        print("debug Error {e} in run command {command}, retrying...")
                         time.sleep(1)
                 client.watch_bg_command(
                     resp,
@@ -335,7 +332,6 @@ class LLMManager:
         for i, node in enumerate(self.nodes_config):
             for j, process in enumerate(node["processes"]):
                 command = node["up_command"].format(**process)
-                print(f"running command: {command}")
                 self.processes.append(
                     multiprocessing.Process(
                         target=run,
@@ -351,11 +347,9 @@ class LLMManager:
                 )
         for p in self.processes:
             p.start()
-            print(f"Started process {p.pid}")
 
     def stop_nodes(self):
         for p in self.processes:
-            print(f"Stopping process {p.pid}")
             p.terminate()
             p.join()
         self.processes = []
