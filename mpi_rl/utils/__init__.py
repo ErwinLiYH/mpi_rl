@@ -68,19 +68,19 @@ class RemoteObjectProxy:
         def __init__(self):
             pass
 
-    def __init__(self, remote_obj_creator):
+    def __init__(self, remote_obj_creator, kargs=None):
         self.parent_conn, child_conn = multiprocessing.Pipe()
 
         self.process = multiprocessing.Process(
             target=self._run_remote_object,
-            args=(remote_obj_creator, child_conn),
+            args=(remote_obj_creator, child_conn, kargs),
             daemon=True
         )
         self.process.start()
         self.parent_conn.recv()  # wait for the remote object to be created
 
-    def _run_remote_object(self, remote_obj_creator, conn):
-        remote_obj = remote_obj_creator()
+    def _run_remote_object(self, remote_obj_creator, conn, kargs=None):
+        remote_obj = remote_obj_creator(**kargs) if kargs else remote_obj_creator()
         conn.send("ready")
         while True:
             try:
