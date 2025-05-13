@@ -2,7 +2,7 @@ import re
 from typing import Literal, Optional
 import textwrap
 
-def safe_escape(text, exempt=Optional[list[str]|str]):
+def safe_escape(text, exempt=None):
     """
     Escape curly braces in text by doubling them, exempting specified placeholders.
     
