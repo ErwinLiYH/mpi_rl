@@ -261,8 +261,10 @@ class BaseAlgorithm:
 
         # update global progress info
         if self.mpi_architecture_config is not None:
-            self.mpi_architecture_config.group_comm.Allreduce(collected_steps, self.progress_info["num_group_step"], op=MPI.SUM)
-            self.mpi_architecture_config.group_comm.Allreduce(collected_episodes, self.progress_info["num_group_episodes"], op=MPI.SUM)
+            self.mpi_architecture_config.group_role_comm.allreduce(collected_steps, op=MPI.SUM)
+            self.progress_info["num_group_step"] += collected_steps
+            self.mpi_architecture_config.group_role_comm.allreduce(collected_episodes, op=MPI.SUM)
+            self.progress_info["num_group_episodes"] += collected_episodes
         else:
             # same as local
             self.progress_info["num_group_episodes"] += collected_episodes
@@ -296,39 +298,53 @@ class BaseAlgorithm:
                                     )
     
     def train_iteration(self):
-        self.logger.info("-"*25+f"Start iteration {self.progress_info['current_iteration']}"+"-"*25)
         if self.mpi_architecture_config is not None:
+            if self.mpi_architecture_config.group_rank==0:
+                self.logger.info("-"*25+f"Start iteration {self.progress_info['current_iteration']}"+"-"*25)
             self.train_iteration_mpi()
         else:
+            self.logger.info("-"*25+f"Start iteration {self.progress_info['current_iteration']}"+"-"*25)
             self.train_iteration_non_mpi()
     
     def train_iteration_mpi(self):
-        self.global_comm.Barrier()
-        if  "training" in self.mpi_architecture_config.role:# TODO: log 不需要写rank之类的，name里包括了
-            self.logger.info(f"Start training in rank {self.mpi_architecture_config.group_rank} of group {self.mpi_architecture_config.group}")
+        self.mpi_architecture_config.group_comm.Barrier()
+        if  "training" in self.mpi_architecture_config.role:
+            self.logger.info(f"Start training, begin rollout")
             with self.train_state():
                 # each rank rollout and collect episodes
                 local_episodes = self.rollout()
+                # The Barrier() wait for all ranks to finish the rollout, actually be useful
+                # when parallel_train_eval is True, because in train(), the model will be updated.
+                # When parallel_train_eval is False, barrier is not needed, but it won't affect the result,
+                # because later gather() will block all ranks too.
+                self.mpi_architecture_config.group_comm.Barrier()
                 # collect episodes from all `training` rank in same group
-                episodes = self.mpi_architecture_config.group_comm.gather(local_episodes, root=0)
+                episodes = self.mpi_architecture_config.group_role_comm.gather(local_episodes, root=0)
                 # episodes in form of [[episodes from rank 0], [episodes from rank 1], ...], so flatten it
                 if self.mpi_architecture_config.group_rank == 0:
                     flatted_episodes = flat_double_layer_list(episodes)
+                    self.logger.info(f"Training on {len(flatted_episodes)} episodes")
                     self.train(flatted_episodes)
                 self.post_train()
         if "evaluation" in self.mpi_architecture_config.role and self.with_evaluation and self.progress_info["current_iteration"]%self.eval_interval==0:
-            self.logger.info(f"Start evaluation in rank {self.mpi_architecture_config.group_rank} of group {self.mpi_architecture_config.group}")
+            self.logger.info(f"Start evaluation, begin rollout")
             with self.eval_state():
                 # each rank rollout and collect episodes
                 local_episodes = self.rollout()
-                # collect episodes from all `training` rank in same group
-                episodes = self.mpi_architecture_config.group_comm.gather(local_episodes, root=0)
+                # The Barrier() wait for all ranks to finish the rollout, actually be useful
+                # when parallel_train_eval is True, because in train(), the model will be updated.
+                # When parallel_train_eval is False, barrier is not needed, but it won't affect the result,
+                # because later gather() will block all ranks too.
+                self.mpi_architecture_config.group_comm.Barrier()
+                # collect episodes from all `evaluation` rank in same group
+                episodes = self.mpi_architecture_config.group_role_comm.gather(local_episodes, root=0)
                 # episodes in form of [[episodes from rank 0], [episodes from rank 1], ...], so flatten it
                 if self.mpi_architecture_config.group_rank == 0:
                     flatted_episodes = flat_double_layer_list(episodes)
+                    self.logger.info(f"Evaluating on {len(flatted_episodes)} episodes")
                     self.evaluate(flatted_episodes)
         self.progress_info["current_iteration"] += 1
-        self.global_comm.Barrier()
+        self.mpi_architecture_config.group_comm.Barrier()
 
     def post_train(self):
         """
