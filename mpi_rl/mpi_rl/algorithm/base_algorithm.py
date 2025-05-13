@@ -147,39 +147,44 @@ class BaseAlgorithm:
         
         # check if it requested the evaluation env from config
         if self.mpi_architecture_config is not None:       # in mpi mode, check the architecture config
+            self.with_evaluation = False
             if self.mpi_architecture_config.with_evaluation:  # need evaluation env
                 if "evaluation" in self.mpi_architecture_config.role:  # only init the training env in ranks with training role
                     if self.eval_env_creator is not None:
                         if "training" in self.mpi_architecture_config.role:  # the rank with both training and evaluation role
                             if config.eval_env_in_another_process:           # if the evaluation env should be in another process
-                                self.eval_env = RemoteObjectProxy(self.eval_env_creator)
+                                self.eval_env = RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name})
                             else:
-                                self.eval_env = self.train_env_creator()
+                                self.eval_env = self.eval_env_creator(algo_name=self.name)
+                            self.with_evaluation = True
+                        else:
+                            self.eval_env = self.eval_env_creator(algo_name=self.name)
                             self.with_evaluation = True
                     else:
                         raise ValueError("Evaluation env creator is not provided \
                                      while it is needed according to the architecture config.")
             else:
                 self.eval_env = None
-                self.with_evaluation = False
 
             if "training" in self.mpi_architecture_config.role:  # only init the training env in ranks with training role
-                self.train_env = self.train_env_creator()
+                self.train_env = self.train_env_creator(algo_name=self.name)
         else: # in non-mpi mode
             if self.eval_env_creator is not None:
                 if config.eval_env_in_another_process:
-                    self.eval_env = RemoteObjectProxy(self.eval_env_creator)
+                    self.eval_env = RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name})
                 else:
-                    self.eval_env = self.eval_env_creator()
+                    self.eval_env = self.eval_env_creator(algo_name=self.name)
                 self.with_evaluation = True
             else:
                 self.eval_env = None
                 self.with_evaluation = False
 
-            self.train_env = self.train_env_creator()
+            self.train_env = self.train_env_creator(algo_name=self.name)
 
-        train_env_type = get_env_type(self.train_env)
-        self.env_type = train_env_type
+        if self.train_env is not None:
+            self.env_type = get_env_type(self.train_env)
+        else:
+            self.env_type = get_env_type(self.eval_env)
     
     def rollout(
             self,
