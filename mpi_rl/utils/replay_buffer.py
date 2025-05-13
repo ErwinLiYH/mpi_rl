@@ -3,7 +3,7 @@ import copy
 import random
 import pickle
 
-from mpi_rl.utils import same_structure_recursive
+from mpi_rl.utils import same_structure_recursive, split_dict
 
 
 class Transaction(dict):
@@ -12,20 +12,13 @@ class Transaction(dict):
     Each transaction stores the data of a single step in the environment, single agent or multi-agent.
     """
     def __init__(self, *args, **kwargs):
-        self.multi_agent = kwargs.pop('multi_agent', False)
         super().__init__(*args, **kwargs)
-
-    def get_agents(self):
-        if self.multi_agent:
-            return self.keys()
-        else:
-            return None
         
-    def get_data(self, field, agent=None):
+    def split_agents(self, agent_list):
         if self.multi_agent:
-            return self[agent][field]
+            return split_dict(self, agent_list)
         else:
-            return self[field]
+            return self
 
 class Episode(list):
     """

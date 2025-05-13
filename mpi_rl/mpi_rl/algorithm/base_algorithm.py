@@ -195,7 +195,6 @@ class BaseAlgorithm:
         collected_steps = 0
         collected_episodes = 0
         episodes = []
-        if_multi_agent = self.multi_agent
         while True:  # episode loop
             obs, info = self._env.reset()
             if self.env_type in ["pzp", "gym"]:
@@ -216,8 +215,15 @@ class BaseAlgorithm:
                         termination=termination,
                         truncation=truncation,
                         info=info,
-                        multi_agent=if_multi_agent,
                         )
+                    if self.multi_agent:
+                        # for multi-agent environment, record the agents
+                        self.operating_transaction.update(agents=action.keys())
+                        # try to get the state, not all multi-agent env has state()
+                        try:
+                            self.operating_transaction.update(state=self._env.state())
+                        except Exception as e:
+                            pass
                     self.operating_episode.insert_transaction(self.operating_transaction)
                     self.operating_transaction.clear()    # refresh the operation transaction
                     obs = next_obs
