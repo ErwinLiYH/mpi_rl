@@ -56,6 +56,12 @@ class MPIArchitectureConfig:
             if num_evaluation_workers > 0:
                 self.role.append("evaluation")
 
+        # split the group into training and evaluation groups
+        if self.parallel_train_eval:
+            train_eval_color = int("training" in self.role)   # 1 if training role, then evaluation role is 0
+            self.group_role_comm = self.group_comm.Split(train_eval_color, self.group_rank)
+        else:
+            self.group_role_comm = self.group_comm
 
     def __check(self):
         # check type
