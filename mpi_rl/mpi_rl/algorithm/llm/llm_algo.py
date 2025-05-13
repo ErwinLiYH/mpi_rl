@@ -4,7 +4,7 @@ if get_use_mpi():
     from mpi_rl.mpi_utils.mpi_architecture_config import MPIArchitectureConfig
 # --------------------------------------
 from mpi_rl.mpi_rl.algorithm.base_algorithm import BaseAlgorithm, BaseAlgorithmConfig
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from typing import Any, Callable, Optional, List
 
@@ -23,6 +23,17 @@ import re
 # Typing Aliases
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import Path_Without_NameT, MessagesT, \
     Input_SequenceT, Invoker_outputT, Kto_Rollout_StatisticsT, BaseInvoker, JsonableT
+
+@dataclass
+class EpisodeKTO:
+    ep_idx: int
+    agent: str
+    episode: Episode
+    promising_num_list: List[int] = field(default_factory=list)
+    finished_num_list: List[int] = field(default_factory=list)
+    total_rollout_list: List[int] = field(default_factory=list)
+    kto_stop: bool = False
+    num_kto_iter: int = 0
 
 @dataclass
 class LLMConfig(BaseAlgorithmConfig):
@@ -132,7 +143,11 @@ class LLM(BaseAlgorithm):
             else:
                 self.system_prompt = self.algorithm_config.system_description
 
-        self.logger.info(f"Run name: {self.algorithm_config.run_name}")
+        if self.mpi_architecture_config is not None:
+            if self.mpi_architecture_config.global_rank == 0:
+                self.logger.info(f"Run name: {self.algorithm_config.run_name}")
+        else:
+            self.logger.info(f"Run name: {self.algorithm_config.run_name}")
 
     def check_config(self):
         assert isinstance(self.algorithm_config, LLMConfig), "algorithm_config should be LLMConfig."
@@ -225,10 +240,25 @@ class LLM(BaseAlgorithm):
             if self.algorithm_config.kto_human_refine:
                 self.kto_human_refine(ep, idx)
         # teach
+        episode_wrappers = []
         for idx, ep in enumerate(episodes):
-            self.teach(ep, idx)
-            with open(os.path.join(self.algorithm_config.record_conversation, f"episodes_{iteration}_teach.pkl"),'wb') as f:
-                pickle.dump(episodes, f)
+            episode_wrappers.append(
+                EpisodeKTO(
+                    ep_idx=idx,
+                    agent=None,
+                    episode=ep
+                )
+            )
+        self.teach(episode_wrappers)
+        
+        with open(os.path.join(self.algorithm_config.record_conversation, f"episode_wrappers_{iteration}_teach.pkl"),'wb') as f:
+            pickle.dump(episode_wrappers, f)
+
+    def evaluate(self, episodes: list[Episode]):
+        for ep in episodes:
+            metrics_dict = self.algorithm_config.metrics_statistics_fn(ep)
+            episode_metrics = json.dumps(metrics_dict)
+            self.logger.info(f"Episode metrics: {episode_metrics}")
 
     def reflex(self, episode: Episode, ep_idx, agent=None):
         metrics_dict = self.algorithm_config.metrics_statistics_fn(episode)
@@ -284,65 +314,86 @@ class LLM(BaseAlgorithm):
                         input_sequence, reasoning_content, content, "None", input_len, output_len
                     )
                     f.write(conversation)
-    
-    def teach(self, episode: Episode, ep_idx:int, agent=None):
-        kto_iter = 0
+
+    def teach(self, episode_wrappers: List[EpisodeKTO]):
         finetune_files = []
-        promising_num_list = []
-        finished_num_list = []
-        total_rollout = []
-        ep_idx_str = f"{ep_idx}_{agent}" if agent is not None else ep_idx
+        def kto_iter(episode_wrapper:EpisodeKTO, episode_wrapper_idx:int)->bool:  # true means no new data on this episode
+            if episode_wrapper.kto_stop == False:
+                ep_idx_str = f"{episode_wrapper.ep_idx}_{episode_wrapper.agent}" \
+                    if episode_wrapper.agent is not None else episode_wrapper.ep_idx
+                # begin to rollout kto data
+                self.logger.info(f"Begin KTO iteration rollout {episode_wrapper.num_kto_iter} for episode {ep_idx_str} ...")
+                filename, finished_num, promising_num, rollout_total = self.kto_iteration(
+                    episode_wrapper.episode,
+                    self.algorithm_config.teach_invoke_fn,
+                    episode_wrapper.ep_idx,
+                    self.progress_info["current_iteration"],
+                    agent=episode_wrapper.agent
+                )
+
+                # check if all transactions are finished
+                if rollout_total == 0:  # no finetune data
+                    assert filename is None
+                    self.logger.info(f"KTO stop - Reason: all transactions in episode {ep_idx_str} are finished.")
+                    episode_wrapper.kto_stop = True
+                    return True
+                
+                finetune_files.append(filename)  # TODO: remember to clear
+                episode_wrapper.num_kto_iter += 1
+                episode_wrapper.promising_num_list.append(promising_num)
+                episode_wrapper.finished_num_list.append(finished_num)
+                episode_wrapper.total_rollout_list.append(rollout_total)
+
+                # check if reach max iteration
+                if episode_wrapper.num_kto_iter == self.algorithm_config.kto_max_iteration:
+                    self.logger.info(f"KTO stop - Reason: max iteration {self.algorithm_config.kto_max_iteration} reached in Episode {ep_idx_str}.")
+                    episode_wrapper.kto_stop = True
+                
+                # early stop check
+                min_len = self.algorithm_config.kto_early_stop_check_iteration
+                if len(episode_wrapper.promising_num_list) >= min_len and\
+                    len(episode_wrapper.finished_num_list) >= min_len and\
+                    sum(episode_wrapper.promising_num_list[-min_len:]) == 0 and \
+                    sum(episode_wrapper.finished_num_list[-min_len:]) == 0:
+                    self.logger.info(f"KTO stop - Reason: no promising transactions in the last {self.algorithm_config.kto_early_stop_check_iteration} iterations in Episode {ep_idx_str}.")
+                    episode_wrapper.kto_stop = True
+                
+                return False
+            else:
+                return True
+
+        n_kto_iter = 0
         while True:
-            # begin to rollout kto data
-            self.logger.info(f"Begin KTO iteration {kto_iter} for episode {ep_idx_str} ...")
-            filename, finished_num, promising_num, rollout_total = self.kto_iteration(
-                episode,
-                self.algorithm_config.teach_invoke_fn,
-                ep_idx,
-                self.progress_info["current_iteration"],
-                agent=agent
-            )
-            finetune_files.append(filename)
-            kto_iter += 1
+            self.logger.info(f"Begin KTO iteration {n_kto_iter} in Training iteration {self.progress_info['current_iteration']} ...")
+            no_new_data_to_finetune = []
+            for episode_wrapper_idx, episode_wrapper in enumerate(episode_wrappers):
+                no_new_data_to_finetune.append(kto_iter(episode_wrapper, episode_wrapper_idx))
 
-            ## close the LLMs
-            self.logger.info("Closing LLMs...")
-            self.llm_manager.stop_nodes()
-
-            ## fine-tune the LLMs
-            self.logger.info(f"Begin to fine-tune LLMs with {filename}...")
-            new_model_path = self.finetune_actor([filename])
-
-            ## update the model path
-            self.logger.info(f"Update the model path to {new_model_path}...")
-            self.llm_manager.change_model_path(new_model_path)
-
-            ## open the LLMs for next kto iteration / or next episode / next train iteration
-            self.logger.info("Opening LLMs...")
-            self.logger.info(self.llm_manager.nodes_config)
-            self.llm_manager.start_nodes()
-            self.llm_manager.wait_route()
-
-            promising_num_list.append(promising_num)
-            finished_num_list.append(finished_num)
-            total_rollout.append(rollout_total)
-
-            # check if all transactions are finished
-            if rollout_total == 0:
-                self.logger.info(f"KTO stop - Reason: all transactions in episode {ep_idx_str} are finished.")
+            if all(no_new_data_to_finetune): # all episodes no new data to finetune
+                self.logger.info("All episodes no new data to finetune.")
                 break
+            else:
+                self.logger.info(f"begin to fine-tune LLMs on data {','.join(finetune_files)}")
 
-            # check if reach max iteration
-            if kto_iter == self.algorithm_config.kto_max_iteration:
-                self.logger.info(f"KTO stop - Reason: max iteration {self.algorithm_config.kto_max_iteration} reached in Episode {ep_idx_str}.")
-                break
-            
-            # early stop check
-            if sum([1]+promising_num_list[-self.algorithm_config.kto_early_stop_check_iteration:]) == 0 and \
-                sum([1]+finished_num_list[-self.algorithm_config.kto_early_stop_check_iteration:]) == 0:
-                # Plus [1] at beginning to avoid situation that promising_num and finished_num are both 0 at first iteration
-                self.logger.info(f"KTO stop - Reason: no promising transactions in the last {self.algorithm_config.kto_early_stop_check_iteration} iterations in Episode {ep_idx_str}.")
-                break
+                ## close the LLMs
+                self.logger.info("Closing LLMs...")
+                self.llm_manager.stop_nodes()
+
+                ## fine-tune the LLMs
+                self.logger.info(f"Begin to fine-tune LLMs with {','.join(finetune_files)}...")
+                new_model_path = self.finetune_actor(finetune_files, n_kto_iter)
+
+                # clean up the fine-tune data
+                finetune_files = []
+
+                ## update the model path
+                self.logger.info(f"Update the model path to {new_model_path}...")
+                self.llm_manager.change_model_path(new_model_path)
+
+                ## open the LLMs for next kto iteration / or next episode / next train iteration
+                self.logger.info("Opening LLMs...")
+                self.llm_manager.start_nodes()
+                self.llm_manager.wait_route()
 
     def kto_iteration(self, episode: Episode, invokers:List[BaseInvoker]|BaseInvoker, ep_idx, kto_it_idx:int, agent=None):
         """"rollout kto data"""
@@ -626,7 +677,7 @@ class LLM(BaseAlgorithm):
                     break
         return data
 
-    def finetune_actor(self, file_names:List[str]):
+    def finetune_actor(self, file_names:List[str], kto_it_idx:int):
         if self.llm_manager is None:
             self.logger.warning("No LLMManager found, can't manager LLMs automatically.")
             return None
@@ -686,7 +737,7 @@ class LLM(BaseAlgorithm):
                 dataset_str = list(dataset_config.keys())[0]
 
             ## update train config
-            output_dir = f"saves/{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}"
+            output_dir = f"saves/{self.algorithm_config.run_name}_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}"
             train_config = {
                 "model_name_or_path": self.current_model_path,
                 "dataset": dataset_str,
@@ -699,7 +750,7 @@ class LLM(BaseAlgorithm):
             )
 
             ## update merge config
-            export_dir = f"output/{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}"
+            export_dir = f"output/{self.algorithm_config.run_name}_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}"
             merge_config = {
                 "model_name_or_path": self.current_model_path,
                 "adapter_name_or_path": output_dir,
@@ -718,28 +769,18 @@ class LLM(BaseAlgorithm):
 
             # fine-tune the LLMs
             self.logger.info("Fine-tuning LLMs...")
+            output_file = os.path.join(
+                self.algorithm_config.record_conversation,
+                f"{self.name}_iter{self.progress_info['current_iteration']}",
+                f"finetune_log_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}.log"
+            )
             finetune_client.run_command(
                 f"FORCE_TORCHRUN=1 llamafactory-cli train {train_config_path} && llamafactory-cli export {merge_config_path}",
                 process_id = f"finetune_{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}",
+                output_file = output_file,
             )
 
             return export_dir
-
-    def post_train(self):
-        """
-        Broadcast the policy conclusion and collected episodes to all the ranks.
-        All ranks store collected episodes to replay_buffer.
-        """
-        if self.mpi_architecture_config is None:
-            for e in self.temp_episodes_llm_algo_specific:
-                self.replay_buffer.insert_episode(e)
-        else:
-            self.temp_episodes_llm_algo_specific = \
-                self.mpi_architecture_config.group_comm.broadcast(self.temp_episodes_llm_algo_specific, root=0)
-            for e in self.temp_episodes_llm_algo_specific:
-                self.replay_buffer.insert_episode(e)
-            self.policy_conclusion = \
-                self.mpi_architecture_config.group_comm.broadcast(self.policy_conclusion, root=0)
 
     # ----------------- LLM algorithm specific functions -----------------
     
