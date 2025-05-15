@@ -8,7 +8,7 @@ class MPIArchitectureConfig:
             num_training_workers: int,
             num_evaluation_workers: int,
             parallel_train_eval: bool,
-            centralized_training: bool,
+            centralized_training: bool = True,
             num_workers_per_group: int = None,
             ):
         self.global_comm = MPI.COMM_WORLD
@@ -19,11 +19,6 @@ class MPIArchitectureConfig:
         self.num_workers_per_group = num_workers_per_group
         self.num_training_workers = num_training_workers
         self.num_evaluation_workers = num_evaluation_workers
-
-        # whether evaluation is needed
-        self.with_evaluation = True
-        if self.parallel_train_eval == False and self.num_evaluation_workers == 0:
-            self.with_evaluation = False
 
         # check the configuration
         self.__check()
@@ -80,9 +75,6 @@ class MPIArchitectureConfig:
 
         # check configuration interaction
         if self.parallel_train_eval:
-            assert self.num_evaluation_workers > 0, (
-                "num_evaluation_workers should be greater than 0 when parallel_train_eval is True."
-            )
             assert self.global_size == self.num_training_workers + self.num_evaluation_workers, (
                 "MPI_size should be equal to num_training_workers + num_evaluation_workers.\n"+
                 "MPI_size: {}, num_training_workers: {}, num_evaluation_workers: {}".format(
@@ -90,16 +82,22 @@ class MPIArchitectureConfig:
             )
         )
         else:
-            assert self.num_training_workers == self.global_size, (
-                "num_training_workers should be equal to MPI_size when parallel_train_eval is False.\n"+
+            assert self.num_training_workers == 0 or self.num_training_workers == self.global_size, (
+                "num_training_workers should be 0 or equal to MPI_size when parallel_train_eval is False.\n"+
                 "num_training_workers: {}, MPI_size: {}".format(
                     self.num_training_workers, self.global_size
                 )
             )
-            assert self.num_evaluation_workers == 0 or self.num_evaluation_workers == self.num_training_workers, (
-                "num_evaluation_workers should be 0 or equal to num_training_workers when parallel_train_eval is False.\n"+
+            assert self.num_evaluation_workers == 0 or self.num_evaluation_workers == self.global_size, (
+                "num_evaluation_workers should be 0 or equal to MPI_size when parallel_train_eval is False.\n"+
                 "num_evaluation_workers: {}, num_training_workers: {}".format(
                     self.num_evaluation_workers, self.num_training_workers
+                )
+            )
+            assert self.num_training_workers + self.num_evaluation_workers != 0, (
+                "num_training_workers and num_evaluation_workers should not be both 0 when parallel_train_eval is False.\n"+
+                "num_training_workers: {}, num_evaluation_workers: {}".format(
+                    self.num_training_workers, self.num_evaluation_workers
                 )
             )
         if self.centralized_training == False:

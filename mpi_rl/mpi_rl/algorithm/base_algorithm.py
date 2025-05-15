@@ -24,6 +24,13 @@ import os
 # typing aliases
 LogPath = str
 
+class EnvHolder:
+    """
+    A class to hold the environment.
+    """
+    def __init__(self, env):
+        self.env = env
+
 @dataclass
 class BaseAlgorithmConfig:
     pass
@@ -34,10 +41,11 @@ class BaseAlgorithm:
     """
     def __init__(
             self,
-            train_env_creator: callable,
-            train_rollout_config:RolloutConfig,
+            train_env_creator: callable = None,
+            train_rollout_config:RolloutConfig = None,
             eval_env_creator: callable = None,
             eval_rollout_config:RolloutConfig = None,
+            hard_reset_env:bool = True,
             replay_buffer:ReplayBuffer = None,
             model_config:ModelConfig = None,
             algorithm_config:BaseAlgorithmConfig = None,
@@ -51,6 +59,7 @@ class BaseAlgorithm:
         self.eval_env_creator = eval_env_creator
         self.train_rollout_config = train_rollout_config
         self.eval_rollout_config = eval_rollout_config
+        self.hard_reset_env = hard_reset_env
         self.mpi_architecture_config = mpi_architecture_config
         self.model_config = model_config
         self.algorithm_config = algorithm_config
@@ -75,6 +84,7 @@ class BaseAlgorithm:
         # to maintain the rollout config state and env
         self._current_rollout_config = None
         self._env = None
+        self._env_creator = None
         self.status = None
 
         # progress info
@@ -127,7 +137,6 @@ class BaseAlgorithm:
             1. self.train_env
             2. self.eval_env
             3. self.env_type
-            4. self.with_evaluation
         should be initialized.
         this function will check whether the evaluation env is needed according to the architecture config in MPI mode,
         or check whether the evaluation env creator is provided in non-MPI mode.
@@ -137,54 +146,61 @@ class BaseAlgorithm:
         using `with self.train_rollout_state():` or `with self.eval_rollout_state()` followed by self._env.
         For example:
         with self.train_rollout_state():
-            self._env.reset()
+            self._env.env.reset()
 
         with self.eval_rollout_state():
-            self._env.reset()
+            self._env.env.reset()
         """
         self.train_env = None
         self.eval_env = None
-        
+
+        def env_creator_remote_maker(env_creator:callable):
+            return lambda algo_name: RemoteObjectProxy(env_creator, {"algo_name": algo_name})
         # check if it requested the evaluation env from config
+        created_train_env = False
         if self.mpi_architecture_config is not None:       # in mpi mode, check the architecture config
-            self.with_evaluation = False
-            if self.mpi_architecture_config.with_evaluation:  # need evaluation env
-                if "evaluation" in self.mpi_architecture_config.role:  # only init the training env in ranks with training role
-                    if self.eval_env_creator is not None:
-                        if "training" in self.mpi_architecture_config.role:  # the rank with both training and evaluation role
-                            if config.eval_env_in_another_process:           # if the evaluation env should be in another process
-                                self.eval_env = RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name})
-                            else:
-                                self.eval_env = self.eval_env_creator(algo_name=self.name)
-                            self.with_evaluation = True
-                        else:
-                            self.eval_env = self.eval_env_creator(algo_name=self.name)
-                            self.with_evaluation = True
-                    else:
-                        raise ValueError("Evaluation env creator is not provided \
-                                     while it is needed according to the architecture config.")
-            else:
-                self.eval_env = None
-
             if "training" in self.mpi_architecture_config.role:  # only init the training env in ranks with training role
-                self.train_env = self.train_env_creator(algo_name=self.name)
-        else: # in non-mpi mode
-            if self.eval_env_creator is not None:
-                if config.eval_env_in_another_process:
-                    self.eval_env = RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name})
+                if self.train_env_creator is not None:
+                    self.train_env = EnvHolder(self.train_env_creator(algo_name=self.name))
+                    created_train_env = True
                 else:
-                    self.eval_env = self.eval_env_creator(algo_name=self.name)
-                self.with_evaluation = True
-            else:
-                self.eval_env = None
-                self.with_evaluation = False
+                    raise ValueError("train_env_creator should be provided.")
 
-            self.train_env = self.train_env_creator(algo_name=self.name)
+            if "evaluation" in self.mpi_architecture_config.role:  # only init the evaluation env in ranks with evaluation role
+                if self.eval_env_creator is not None:
+                    if config.eval_env_in_another_process and created_train_env:
+                        self.eval_env = EnvHolder(RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name}))
+                        self.eval_env_creator = env_creator_remote_maker(self.eval_env_creator)
+                    else:    
+                        self.eval_env = EnvHolder(self.eval_env_creator(algo_name=self.name))
+                else:
+                    raise ValueError("eval_env_creator should be provided.")
+        else: # in non-mpi mode
+            if self.train_env_creator is not None:
+                self.train_env = EnvHolder(self.train_env_creator(algo_name=self.name))
+                created_train_env = True
+            if self.eval_env_creator is not None:
+                if config.eval_env_in_another_process and created_train_env:
+                    self.eval_env = EnvHolder(RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name}))
+                    self.eval_env_creator = env_creator_remote_maker(self.eval_env_creator)
+                else:
+                    self.eval_env = EnvHolder(self.eval_env_creator(algo_name=self.name))
+            if self.eval_env is None and self.train_env is None:
+                raise ValueError("train_env_creator or eval_env_creator should be provided.")
 
         if self.train_env is not None:
             self.env_type = get_env_type(self.train_env)
         else:
             self.env_type = get_env_type(self.eval_env)
+
+    def reset_env(self):
+        """
+        Reset the environment, must be called within the train_state() or eval_state() context.
+        """
+        if self.hard_reset_env:
+            self._env.env = self._env_creator(algo_name=self.name)
+        
+        return self._env.env.reset()
     
     def rollout(
             self,
@@ -196,12 +212,12 @@ class BaseAlgorithm:
         collected_episodes = 0
         episodes = []
         while True:  # episode loop
-            obs, info = self._env.reset()
+            obs, info = self.reset_env()
             if self.env_type in ["pzp", "gym"]:
                 while True:  # step loop
                     action = self.compute_action(obs)
                     self.logger.info(f"Act - Step {collected_steps} - {self.status} - Action: {action}")
-                    next_obs, reward, termination, truncation, info = self._env.step(action)
+                    next_obs, reward, termination, truncation, info = self._env.env.step(action)
                     if self.transaction_process_fn is not None:
                         obs, action, reward, next_obs, termination, truncation, info = \
                             self.transaction_process_fn(obs, action, reward, next_obs, termination, truncation, info)
@@ -221,7 +237,7 @@ class BaseAlgorithm:
                         self.operating_transaction.update(agents=action.keys())
                         # try to get the state, not all multi-agent env has state()
                         try:
-                            self.operating_transaction.update(state=self._env.state())
+                            self.operating_transaction.update(state=self._env.env.state())
                         except Exception as e:
                             pass
                     self.operating_episode.insert_transaction(self.operating_transaction)
@@ -236,7 +252,7 @@ class BaseAlgorithm:
                     if self.env_type == "pzp" or (self.multi_agent and self.env_type=="gym"):
                         # for pettingzoo parallel environment and multi-agent gym environment
                         if self._current_rollout_config.pzp_episode_cut_method=="strict_pzp":
-                            termi = bool(self._env.agents)
+                            termi = bool(self._env.env.agents)
                         elif self._current_rollout_config.pzp_episode_cut_method=="any":
                             termi = any(termination.values()) or any(truncation.values())
                         elif self._current_rollout_config.pzp_episode_cut_method=="all":
@@ -332,7 +348,7 @@ class BaseAlgorithm:
                     self.logger.info(f"Training on {len(flatted_episodes)} episodes")
                     self.train(flatted_episodes)
                 self.post_train()
-        if "evaluation" in self.mpi_architecture_config.role and self.with_evaluation and self.progress_info["current_iteration"]%self.eval_interval==0:
+        if "evaluation" in self.mpi_architecture_config.role and self.progress_info["current_iteration"]%self.eval_interval==0:
             self.logger.info(f"Start evaluation, begin rollout")
             with self.eval_state():
                 # each rank rollout and collect episodes
@@ -359,11 +375,12 @@ class BaseAlgorithm:
         pass
 
     def train_iteration_non_mpi(self):
-        with self.train_state():
-            episodes = self.rollout()
-            self.train(episodes)
-            self.post_train()
-        if self.with_evaluation and self.progress_info["current_iteration"]%self.eval_interval==0:
+        if self.train_env is not None:
+            with self.train_state():
+                episodes = self.rollout()
+                self.train(episodes)
+                self.post_train()
+        if self.eval_env is not None and self.progress_info["current_iteration"]%self.eval_interval==0:
             with self.eval_state():
                 episodes = self.rollout()
                 self.evaluate(episodes)
@@ -392,12 +409,18 @@ class BaseAlgorithm:
         # manage the status
         original_status = self.status
         self.status = "train"
+
+        # manager the env creator
+        original_env_creator = self._env_creator
+        self._env_creator = self.train_env_creator
+
         try:
             yield
         finally:
             self._current_rollout_config = original_rollout_config
             self._env = original_env
             self.status = original_status
+            self._env_creator = original_env_creator
 
     @contextmanager
     def eval_state(self):
@@ -417,12 +440,18 @@ class BaseAlgorithm:
         # manage the status
         original_status = self.status
         self.status = "eval"
+
+        # manager the env creator
+        original_env_creator = self._env_creator
+        self._env_creator = self.eval_env_creator
+
         try:
             yield
         finally:
             self._current_rollout_config = original_rollout_config
             self._env = original_env
             self.status = original_status
+            self._env_creator = original_env_creator
 
     def on_end_of_episode(self):
         """
