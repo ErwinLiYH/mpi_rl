@@ -312,17 +312,20 @@ class LLMManager:
             pid = None
             try:
                 while True:
-                    try:
-                        process_id, pid, resp = client.run_command_bg(command)
-                        break
-                    except Exception as e:
-                        time.sleep(1)
-                client.watch_bg_command(
-                    resp,
-                    output_file=output_file,
-                    print_output=print_output,
-                    process_id=process_id,
-                )
+                    while True:
+                        try:
+                            process_id, pid, resp = client.run_command_bg(command)
+                            break
+                        except Exception as e:
+                            time.sleep(1)
+                    client.watch_bg_command(
+                        resp,
+                        output_file=output_file,
+                        print_output=print_output,
+                        process_id=process_id,
+                    )
+                    print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished unexpectedly, restarting...", flush=True)
+                    time.sleep(1)
             except Exception as e:
                 print(f"debug Error in run command {command}: {e}")
                 if pid:
