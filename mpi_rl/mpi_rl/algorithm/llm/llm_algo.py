@@ -317,7 +317,7 @@ class LLM(BaseAlgorithm):
 
     def teach(self, episode_wrappers: List[EpisodeKTO]):
         finetune_files = []
-        def kto_iter(episode_wrapper:EpisodeKTO, episode_wrapper_idx:int)->bool:  # true means no new data on this episode
+        def kto_iter(episode_wrapper:EpisodeKTO)->bool:  # true means no new data on this episode
             if episode_wrapper.kto_stop == False:
                 ep_idx_str = f"{episode_wrapper.ep_idx}_{episode_wrapper.agent}" \
                     if episode_wrapper.agent is not None else episode_wrapper.ep_idx
@@ -327,7 +327,7 @@ class LLM(BaseAlgorithm):
                     episode_wrapper.episode,
                     self.algorithm_config.teach_invoke_fn,
                     episode_wrapper.ep_idx,
-                    self.progress_info["current_iteration"],
+                    episode_wrapper.num_kto_iter,
                     agent=episode_wrapper.agent
                 )
 
@@ -366,8 +366,8 @@ class LLM(BaseAlgorithm):
         while True:
             self.logger.info(f"Begin KTO iteration {n_kto_iter} in Training iteration {self.progress_info['current_iteration']} ...")
             no_new_data_to_finetune = []
-            for episode_wrapper_idx, episode_wrapper in enumerate(episode_wrappers):
-                no_new_data_to_finetune.append(kto_iter(episode_wrapper, episode_wrapper_idx))
+            for episode_wrapper in episode_wrappers:
+                no_new_data_to_finetune.append(kto_iter(episode_wrapper))
 
             if all(no_new_data_to_finetune): # all episodes no new data to finetune
                 self.logger.info("All episodes no new data to finetune.")
@@ -389,11 +389,14 @@ class LLM(BaseAlgorithm):
                 ## update the model path
                 self.logger.info(f"Update the model path to {new_model_path}...")
                 self.llm_manager.change_model_path(new_model_path)
+                self.current_model_path = new_model_path
 
                 ## open the LLMs for next kto iteration / or next episode / next train iteration
                 self.logger.info("Opening LLMs...")
                 self.llm_manager.start_nodes()
                 self.llm_manager.wait_route()
+
+                n_kto_iter += 1
 
     def kto_iteration(self, episode: Episode, invokers:List[BaseInvoker]|BaseInvoker, ep_idx, kto_it_idx:int, agent=None):
         """"rollout kto data"""
@@ -517,6 +520,7 @@ class LLM(BaseAlgorithm):
                     original_action = episode[i]["transaction"]["action"]-self.algorithm_config.action_offset
                     json_str = f"Step {episode[i]['index_in_episode']}: {json_str}{{{original_action}}}"
                 str_list.append(json_str)
+            str_list.append(json.dumps(self.algorithm_config.metrics_statistics_fn(episode)))
             s = "\n".join(str_list)
             # save s to file
             with open(file_name, 'w') as f:
@@ -621,9 +625,9 @@ class LLM(BaseAlgorithm):
                     remark = f"kto rollout bad, expected action: {target_action}, got: {llm_teach['action']}"
                     rollout_statistics["bad_times"] += 1
                 if thread_idx is not None:
-                    self.logger.info(f"KTO - Thread {thread_idx} - Step {trans_idx} - Rollout <total: {rollout_statistics['total_times']} good: {rollout_statistics['good_times']} bad: {rollout_statistics['bad_times']}> - Expect: {target_action} - Got: {llm_teach['action']}")
+                    self.logger.info(f"KTO - Thread {thread_idx} - Episode {ep_idx} - Step {trans_idx} - Rollout <total: {rollout_statistics['total_times']} good: {rollout_statistics['good_times']} bad: {rollout_statistics['bad_times']}> - Expect: {target_action} - Got: {llm_teach['action']}")
                 else:
-                    self.logger.info(f"KTO - Step {trans_idx} - Rollout <total: {rollout_statistics['total_times']} good: {rollout_statistics['good_times']} bad: {rollout_statistics['bad_times']}> - Expect: {target_action} - Got: {llm_teach['action']}")
+                    self.logger.info(f"KTO - Step {trans_idx}- Episode {ep_idx} - Rollout <total: {rollout_statistics['total_times']} good: {rollout_statistics['good_times']} bad: {rollout_statistics['bad_times']}> - Expect: {target_action} - Got: {llm_teach['action']}")
                 kto_actions.append(llm_teach["action"])
                 # build data
                 data.append({
@@ -768,16 +772,17 @@ class LLM(BaseAlgorithm):
             self.logger.info(f"Merge config: {merge_config_check}")
 
             # fine-tune the LLMs
-            self.logger.info("Fine-tuning LLMs...")
             output_file = os.path.join(
                 self.algorithm_config.record_conversation,
                 f"{self.name}_iter{self.progress_info['current_iteration']}",
                 f"finetune_log_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}.log"
             )
+            self.logger.info(f"Fine-tuning LLMs, see log in {output_file}...")
             finetune_client.run_command(
                 f"FORCE_TORCHRUN=1 llamafactory-cli train {train_config_path} && llamafactory-cli export {merge_config_path}",
                 process_id = f"finetune_{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}",
                 output_file = output_file,
+                print_output = False,
             )
 
             return export_dir
