@@ -13,15 +13,14 @@ def allocate_list_resource_by_num(L:list, num_each:int, comm:MPI.Comm)->list:
     if rank < len(L0):
         return L0[rank]
     else:
-        return []
+        raise Exception(f"Resource is out of range, {len(L)} resource, {comm_size} ranks requests {num_each} each.")
     
-def run_on_one_rank(comm:MPI.Comm, rank:int, func, *args, **kwargs):
+def run_on_one_rank(comm:MPI.Comm, rank:int, func, *args, **kwargs) -> None:
     """
     Run a function on one rank, and broadcast the result to all ranks.
     """
     rank = comm.Get_rank()
     if rank == rank:
-        result = func(*args, **kwargs)
+        func(*args, **kwargs)
     else:
-        result = None
-    return result
+        return
