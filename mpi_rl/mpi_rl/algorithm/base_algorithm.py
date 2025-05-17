@@ -155,6 +155,7 @@ class BaseAlgorithm:
         """
         self.train_env = None
         self.eval_env = None
+        self.first_reset = True
 
         def env_creator_remote_maker(env_creator:callable):
             return lambda algo_name: RemoteObjectProxy(env_creator, {"algo_name": algo_name})
@@ -196,18 +197,32 @@ class BaseAlgorithm:
                 raise ValueError("train_env_creator or eval_env_creator should be provided.")
 
         if self.train_env is not None:
-            self.env_type = get_env_type(self.train_env.env)
+            if self.separate_eval_proc:
+                self.env_type = self.train_env.env.env_type
+            else:
+                self.env_type = get_env_type(self.train_env.env)
+        elif self.eval_env is not None:
+            if self.separate_eval_proc:
+                self.env_type = self.eval_env.env.env_type
+            else:
+                self.env_type = get_env_type(self.eval_env.env)
         else:
-            self.env_type = get_env_type(self.eval_env.env)
+            raise ValueError("train_env_creator or eval_env_creator should be provided.")
 
     def reset_env(self):
         """
         Reset the environment, must be called within the train_state() or eval_state() context.
         """
         if self.hard_reset_env:
-            if self.separate_eval_proc:
-                self._env.env.close()
-            self._env.env = self._env_creator(algo_name=self.name)
+            if not self.first_reset:
+                print("reinitializing the env", flush=True)
+                # re-initialize the env
+                if self.separate_eval_proc:
+                    self._env.env.close()
+                self._env.env = self._env_creator(algo_name=self.name)
+            else:
+                print("First reset, no need to re-init the env.",flush=True)
+                self.first_reset = False
         
         return self._env.env.reset()
     

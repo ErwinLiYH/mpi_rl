@@ -77,11 +77,12 @@ class RemoteObjectProxy:
             daemon=True
         )
         self.process.start()
-        self.parent_conn.recv()  # wait for the remote object to be created
+        self.env_type = self.parent_conn.recv()  # wait for the remote object to be created
 
     def _run_remote_object(self, remote_obj_creator, conn, kargs=None):
         remote_obj = remote_obj_creator(**kargs) if kargs else remote_obj_creator()
-        conn.send("ready")
+        env_type = get_env_type(remote_obj)
+        conn.send(env_type)
         while True:
             try:
                 cmd = conn.recv()
@@ -107,6 +108,8 @@ class RemoteObjectProxy:
                 break
 
     def __getattr__(self, name):
+        if self.process.is_alive() is False:
+            raise RuntimeError("Remote process is not alive")
         def dynamic_call(*args, **kwargs):
             self.parent_conn.send((name, True, args, kwargs))
             
