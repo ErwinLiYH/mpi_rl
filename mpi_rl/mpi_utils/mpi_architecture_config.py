@@ -35,8 +35,6 @@ class MPIArchitectureConfig:
 
         # generate role
         self.role = []  # "main", "training", "evaluation"
-        if self.group_rank == 0:
-            self.role.append("main")
         num_training_workers_per_group = (   # after checking, this is always an integer
             self.num_training_workers / 
             (self.global_size/self.num_workers_per_group)
@@ -55,8 +53,15 @@ class MPIArchitectureConfig:
         if self.parallel_train_eval:
             train_eval_color = int("training" in self.role)   # 1 if training role, then evaluation role is 0
             self.group_role_comm = self.group_comm.Split(train_eval_color, self.group_rank)
+            self.group_role_size = self.group_role_comm.Get_size()
+            self.group_role_rank = self.group_role_comm.Get_rank()
         else:
             self.group_role_comm = self.group_comm
+            self.group_role_size = self.group_size
+            self.group_role_rank = self.group_rank
+
+        if self.group_role_rank == 0:
+            self.role.append("main")
 
     def __check(self):
         # check type
@@ -149,8 +154,8 @@ class MPIArchitectureConfig:
             )
 
     def mpi_print_role(self):
-        local_output = "Global Rank: {}, Group Index: {}, Group Rank: {}, Role: {}".format(
-            self.global_rank, self.group, self.group_rank, self.role
+        local_output = "Global Rank: {}, Group Index: {}, Group Rank: {}, Role Rank {}, Role: {}".format(
+            self.global_rank, self.group, self.group_rank, self.group_role_rank, self.role
         )
 
         all_outputs = self.global_comm.gather(local_output, root=0)

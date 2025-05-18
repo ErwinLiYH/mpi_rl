@@ -367,7 +367,7 @@ class BaseAlgorithm:
                 # collect episodes from all `training` rank in same group
                 episodes = self.mpi_architecture_config.group_role_comm.gather(local_episodes, root=0)
                 # episodes in form of [[episodes from rank 0], [episodes from rank 1], ...], so flatten it
-                if self.mpi_architecture_config.group_rank == 0:
+                if self.mpi_architecture_config.group_role_rank == 0: # == if "main" in self.mpi_architecture_config.role:
                     flatted_episodes = flat_double_layer_list(episodes)
                     self.logger.info(f"Training on {len(flatted_episodes)} episodes")
                     self.train(flatted_episodes)
@@ -385,7 +385,7 @@ class BaseAlgorithm:
                 # collect episodes from all `evaluation` rank in same group
                 episodes = self.mpi_architecture_config.group_role_comm.gather(local_episodes, root=0)
                 # episodes in form of [[episodes from rank 0], [episodes from rank 1], ...], so flatten it
-                if self.mpi_architecture_config.group_rank == 0:
+                if self.mpi_architecture_config.group_role_rank == 0:  # == if "main" in self.mpi_architecture_config.role:
                     flatted_episodes = flat_double_layer_list(episodes)
                     self.logger.info(f"Evaluating on {len(flatted_episodes)} episodes")
                     self.evaluate(flatted_episodes)
