@@ -299,6 +299,9 @@ def make_conversation(input_sequence, reasoning_content, content, expected_input
     return conversation
 
 class LLMManager:
+    """
+    Used to manager LLM inference nodes. All node should run continuously in background, so it don't block main process and if one node is down, it will be restarted automatically.
+    """
     def __init__(self, nodes_config: List[dict]):
         self.nodes_config = nodes_config
         for node in nodes_config:
@@ -314,27 +317,25 @@ class LLMManager:
                 while True:
                     while True:
                         try:
-                            process_id, pid, resp = client.run_command_bg(command)
+                            process_id, pid, resp = client.run_command_bg(command, process_id=process_id)
                             break
                         except Exception as e:
                             time.sleep(1)
-                    client.watch_bg_command(
+                    returncode = client.watch_bg_command(
                         resp,
                         output_file=output_file,
                         print_output=print_output,
-                        process_id=process_id,
                     )
-                    print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished unexpectedly, restarting...", flush=True)
+                    print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished unexpectedly with returncode {returncode}, restarting...", flush=True)
                     time.sleep(1)
             except Exception as e:
-                print(f"debug Error in run command {command}: {e}")
                 if pid:
-                    print(f"debug Error {e} in run command {command}, killing process {pid}")
+                    print(f"Error: {e}, killing process {pid}", flush=True)
                     client.kill_process(pid)
         
         for i, node in enumerate(self.nodes_config):
             for j, process in enumerate(node["processes"]):
-                command = node["up_command"].format(**process)
+                command = node["up_command"].format(n_idx=i, p_idx=j, num_n=len(self.nodes_config), **process)
                 self.processes.append(
                     multiprocessing.Process(
                         target=run,
