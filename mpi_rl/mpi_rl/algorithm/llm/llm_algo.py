@@ -13,7 +13,7 @@ from mpi_rl.utils.config_helper import RolloutConfig
 from mpi_rl.utils import chunk
 
 from mpi_rl.mpi_rl.algorithm.llm.prompt_template import ActTemplate, ReflexTemplate
-from mpi_rl.mpi_rl.algorithm.llm.llm_utils import make_conversation, LLMManager
+from mpi_rl.mpi_rl.algorithm.llm.llm_utils import make_conversation, LLMManager, FinetuneManager
 
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -62,7 +62,8 @@ class LLMConfig(BaseAlgorithmConfig):
     reflex_specific_transaction_process_fn: Optional[Callable[[Transaction], JsonableT]] = None
     fine_tune_data_path: Optional[Path_Without_NameT] = None
     action_offset:float = 0
-    node_configs: Optional[dict] = None # can't use train() if None
+    inference_node_configs: Optional[dict] = None # can't use train() if None
+    finetune_node_configs: Optional[dict] = None  # using first node in inference_node_configs to finetune if none
     run_name: Optional[str] = None
     initial_train_config_path: Optional[str] = None
     initial_merge_config_path: Optional[str] = None
@@ -133,6 +134,8 @@ class LLM(BaseAlgorithm):
 
         self.init_llm_manager()
 
+        self.init_finetune_manager()
+
         self.init_llm()
 
         if self.algorithm_config.system_description_in_user:
@@ -157,12 +160,19 @@ class LLM(BaseAlgorithm):
         assert isinstance(self.algorithm_config, LLMConfig), "algorithm_config should be LLMConfig."
 
     def init_llm_manager(self):
-        if self.algorithm_config.node_configs is not None:
-            self.llm_manager = LLMManager(self.algorithm_config.node_configs)
-            self.current_model_path = self.algorithm_config.node_configs[0]["processes"][0]["model_path"]
+        if self.algorithm_config.inference_node_configs is not None:
+            self.llm_manager = LLMManager(self.algorithm_config.inference_node_configs)
+            self.current_model_path = self.algorithm_config.inference_node_configs[0]["processes"][0]["model_path"]
         else:
             self.llm_manager = None
-            self.logger.warning("No node_configs found, can't init LLMmanager")
+            self.logger.warning("No inference_node_configs found, can't init LLMmanager")
+
+    def init_finetune_manager(self):
+        if self.algorithm_config.finetune_node_configs is not None:
+            self.finetune_manager = FinetuneManager(self.algorithm_config.finetune_node_configs)
+        else:
+            self.finetune_manager = None
+            self.logger.warning("No finetune_node_configs found, using first inference node to finetune.")
 
     def init_llm(self):
         # initialize LLMs
