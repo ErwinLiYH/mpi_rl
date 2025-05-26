@@ -12,6 +12,8 @@ from mpi_rl.mpi_rl.algorithm.llm.llm_utils import (
 from mpi_rl.utils.config_helper import RolloutConfig
 from mpi_rl.utils.replay_buffer import ReplayBuffer, Episode, Transaction
 from mpi_rl.utils import Pipeline, advanced_retry
+from mpi_rl.mpi_utils.mpi_architecture_config import MPIArchitectureConfig
+from mpi_rl.mpi_utils import allocate_list_resource_by_num
 
 from copy import deepcopy
 from pathlib import Path
@@ -26,11 +28,23 @@ from Kkit import init_logger, PathJoin
 from Kkit.port_control import PortController
 
 
-if len(sys.argv) == 2:
-    exp_folder = sys.argv[1]
-elif len(sys.argv) == 1:
-    exp_folder = path_allocator("exps/exp", "")
-    exp_folder = Path(exp_folder).resolve().as_posix()
+mpi_config = MPIArchitectureConfig(
+    num_training_workers=0,
+    num_evaluation_workers=10,
+    parallel_train_eval=True,
+    centralized_training=True,
+    num_workers_per_group=None
+)
+mpi_config.mpi_print_role()
+
+exp_folder = None
+if mpi_config.global_rank == 0:
+    if len(sys.argv) == 2:
+        exp_folder = sys.argv[1]
+    elif len(sys.argv) == 1:
+        exp_folder = path_allocator("exps/exp", "")
+        exp_folder = Path(exp_folder).resolve().as_posix()
+exp_folder = mpi_config.global_comm.bcast(exp_folder, root=0)
 print("Experiment result path:", exp_folder)
 
 prj_path_join = PathJoin(exp_folder)
@@ -103,49 +117,57 @@ qwq32b_invoker_1 = GeneralRequestInvoker(
 )
 
 # Init local invokers
-original_model_name = "Qwen3-8B"
-trained_model_name = "QwQ_1"
-original_port_controller = PortController(name=original_model_name)
-# trained_port_controller = PortController(name=trained_model_name)
-original_ports = original_port_controller.allocate_port(1)
-# trained_port = trained_port_controller.allocate_port()
+original_model_name = "qwq32_b"
+nodes_config_model_path = "/lustre/home/yl1118/LLaMA-Factory/output/lrl_20250522_005527_train_it0_kto_it10"# "Qwen/Qwen3-8B"
+nodes_config_model_name = original_model_name
+qwen3=False
+original_ports = [9001, 9002, 9004, 9005, 9007, 9008]
+n_proc_each_port = 2
 
-act_port = original_ports[0]
+act_ports = allocate_list_resource_by_num(original_ports*n_proc_each_port, 1, mpi_config.global_comm)
+# *n because each port can be used by n processes
+
+act_port = act_ports[0]
 reflex_port = original_ports[0]
-teach_port = original_ports
+teach_port = original_ports*n_proc_each_port
 
-print(f"original model port: {original_ports}")
-# print(f"trained model port: {trained_port}")
+if mpi_config.global_rank == 0:
+    print(f"original model port: {original_ports}")
 
-print(f"act_port: {act_port}")
-print(f"reflex_port: {reflex_port}")
-print(f"teach_port: {teach_port}")
+prefix = f"g{mpi_config.group}_r{mpi_config.group_rank}"
+print(f"{prefix} act_port: {act_port}")
+print(f"{prefix} reflex_port: {reflex_port}")
+print(f"{prefix} teach_port: {teach_port}")
+
+top_p = 0.95
+top_k = 20
+temp = 0.6
 
 qwq32b_invoker_act = GeneralRequestInvoker(
     full_url=f"http://localhost:{act_port}/v1/chat/completions",
     model_name=original_model_name,
     content_filter_fn=llm_action_filter_check,
-    top_k=40,
-    top_p=0.95,
-    temperature=0.6,
+    top_k=top_k,
+    top_p=top_p,
+    temperature=temp,
 )
 
 qwq32b_invoker_teach = GeneralRequestInvoker(
     full_url=f"http://localhost:{teach_port}/v1/chat/completions",
     model_name="QwQ_ori",
     content_filter_fn=llm_teach_filter_check,
-    top_k=40,
-    top_p=0.95,
-    temperature=0.6,
+    top_k=top_k,
+    top_p=top_p,
+    temperature=temp,
 )
 
 qwq32b_invoker_reflex = GeneralRequestInvoker(
     full_url=f"http://localhost:{reflex_port}/v1/chat/completions",
     model_name="QwQ_ori",
     content_filter_fn=llm_reflex_filter_check,
-    top_k=40,
-    top_p=0.95,
-    temperature=0.6,
+    top_k=top_k,
+    top_p=top_p,
+    temperature=temp,
 )
 
 def make_retry_lambda(invoker):
@@ -156,12 +178,116 @@ qwq32b_invokers_teach2 = [
         full_url=f"http://localhost:{port}/v1/chat/completions",
         model_name=original_model_name,
         content_filter_fn=llm_teach2_filter_check,
-        top_k=40,
-        top_p=0.95,
-        temperature=0.6,
+        top_k=top_k,
+        top_p=top_p,
+        temperature=temp,
     ) for port in teach_port
 ]
 qwq32b_invokers_teach2_retry = [make_retry_lambda(invoker) for invoker in qwq32b_invokers_teach2]
+
+nodes_config = [
+    {
+        "processes":[
+            {
+                "gpu":0,
+                "model_path": nodes_config_model_path,
+                "port": 9001,
+                "model_name": nodes_config_model_name,
+                "log_file": "/lustre/home/yl1118/vllmlogs/vllm9001",
+            },
+            {
+                "gpu":1,
+                "model_path": nodes_config_model_path,
+                "port": 9002,
+                "model_name": nodes_config_model_name,
+                "log_file": "/lustre/home/yl1118/vllmlogs/vllm9002",
+            }
+        ],
+        "server_url": "http://localhost:9000",
+        "up_command": "CUDA_VISIBLE_DEVICES={gpu} vllm serve {model_path} --max-model-len 32768 --gpu-memory-utilization 0.98 --host 0.0.0.0 --port {port} --served-model-name {model_name} --enable-reasoning --reasoning-parser deepseek_r1 > {log_file}.out 2> {log_file}.err",
+        "wait_routes": ["http://localhost:9001/v1/models", "http://localhost:9002/v1/models"],
+    },
+    {
+        "processes":[
+            {
+                "gpu":0,
+                "model_path": nodes_config_model_path,
+                "port": 9004,
+                "model_name": nodes_config_model_name,
+                "log_file": "/lustre/home/yl1118/vllmlogs/vllm9004",
+            },
+            {
+                "gpu":1,
+                "model_path": nodes_config_model_path,
+                "port": 9005,
+                "model_name": nodes_config_model_name,
+                "log_file": "/lustre/home/yl1118/vllmlogs/vllm9005",
+            }
+        ],
+        "server_url": "http://localhost:9003",
+        "up_command": "CUDA_VISIBLE_DEVICES={gpu} vllm serve {model_path} --max-model-len 32768 --gpu-memory-utilization 0.98 --host 0.0.0.0 --port {port} --served-model-name {model_name} --enable-reasoning --reasoning-parser deepseek_r1 > {log_file}.out 2> {log_file}.err",
+        "wait_routes": ["http://localhost:9004/v1/models", "http://localhost:9005/v1/models"],
+    },
+    {
+        "processes":[
+            {
+                "gpu":0,
+                "model_path": nodes_config_model_path,
+                "port": 9007,
+                "model_name": nodes_config_model_name,
+                "log_file": "/lustre/home/yl1118/vllmlogs/vllm9007",
+            },
+            {
+                "gpu":1,
+                "model_path": nodes_config_model_path,
+                "port": 9008,
+                "model_name": nodes_config_model_name,
+                "log_file": "/lustre/home/yl1118/vllmlogs/vllm9008",
+            }
+        ],
+        "server_url": "http://localhost:9006",
+        "up_command": "CUDA_VISIBLE_DEVICES={gpu} vllm serve {model_path} --max-model-len 32768 --gpu-memory-utilization 0.98 --host 0.0.0.0 --port {port} --served-model-name {model_name} --enable-reasoning --reasoning-parser deepseek_r1 > {log_file}.out 2> {log_file}.err",
+        "wait_routes": ["http://localhost:9007/v1/models", "http://localhost:9008/v1/models"],
+    }
+]
+
+master_host = "10.122.1.244"
+
+finetune_nodes_config = [
+    {
+        "processes":[
+            {
+                "master_addr": master_host,
+                "master_port": 29500,
+                "config_path": "init later",
+            }
+        ],
+        "server_url": "http://localhost:9000",
+        "up_command": "FORCE_TORCHRUN=1 NNODES={num_n} NODE_RANK={n_idx} MASTER_ADDR={master_addr} MASTER_PORT={master_port} llamafactory-cli train {config_path}"
+    },
+    {
+        "processes":[
+            {
+                "master_addr": master_host,
+                "master_port": 29500,
+                "config_path": "init later",
+            }
+        ],
+        "server_url": "http://localhost:9003",
+        "up_command": "FORCE_TORCHRUN=1 NNODES={num_n} NODE_RANK={n_idx} MASTER_ADDR={master_addr} MASTER_PORT={master_port} llamafactory-cli train {config_path}"
+    },
+    {
+        "processes":[
+            {
+                "master_addr": master_host,
+                "master_port": 29500,
+                "config_path": "init later",
+            }
+        ],
+        "server_url": "http://localhost:9006",
+        "up_command": "FORCE_TORCHRUN=1 NNODES={num_n} NODE_RANK={n_idx} MASTER_ADDR={master_addr} MASTER_PORT={master_port} llamafactory-cli train {config_path}"
+    }
+]
 
 system_desc = """\
 # 网络切片资源控制任务
@@ -259,6 +385,9 @@ act_prompt = """\
 "action": [这一步决定采取的动作，A{{t+1}}, 6-40的整数,不要超过这个区间，int类型]
 }}
 ```"""
+
+if qwen3:
+    act_prompt += " /think"
 
 reflex_prompt = """\
 你是reflector, 结合上面完整的episode信息, 逐条分析其中用<<<< >>>包裹的片段Z:
@@ -383,31 +512,38 @@ llm_config = LLMConfig(
     reflex_specific_transaction_process_fn=process_transaction_reflex,
     reflex_batch=reflex_batch,
     fine_tune_data_path=prj_path_join("fine_tune_data"),
+    inference_node_configs=nodes_config,
+    finetune_node_configs=finetune_nodes_config,
+    initial_train_config_path=os.path.join(os.path.dirname(__file__), "example_train.yaml"),
+    initial_merge_config_path=os.path.join(os.path.dirname(__file__), "example_merge.yaml"),
     action_offset=-6,
     kto_rollout_stop_fn=kto_rollout_stop,
     kto_finish_check_fn=kto_finish_check,
     kto_human_refine=True,
     kto_specified_transaction_process_fn=process_transaction_reflex,
+    kto_max_iteration=10,
+    kto_early_stop_check_iteration=3,
+    skip_reflex=True,
 )
 
 episode_len = 300
 
-def train_env_scen2_creator():
+def train_env_scen2_creator(algo_name):
     return scenario_two.ScenarioTwo(
         f"train", episode_len,
         unchange_terminate = 0,
-        root_path=os.path.join(exp_folder, "train_logs"),
+        root_path=os.path.join(exp_folder, f"{algo_name}_train_logs"),
         no_termi=True,
         plot = False,
         num_obs_history=1,
         warmup_times = 75
     )
 
-def eval_env_scen2_creator():
+def eval_env_scen2_creator(algo_name):
     return scenario_two.ScenarioTwo(
         f"eval", episode_len,
         unchange_terminate = 0,
-        root_path=os.path.join(exp_folder, "eval_logs"),
+        root_path=os.path.join(exp_folder, f"{algo_name}_eval_logs"),
         no_termi=True,
         plot = True,
         num_obs_history=1,
@@ -431,32 +567,42 @@ llm_algo = LLM(
     replay_buffer = replay,
     algorithm_config = llm_config,
     log_paths = ["print", prj_path_join("llm_algo.log")],
+    mpi_architecture_config=mpi_config,
+    hard_reset_env=True,
 )
 
 llm_algo.logger.setLevel("INFO")
 
 # train
-# for _ in range(1):
-#     llm_algo.train_iteration()
-
-# eval
 for _ in range(1):
-    with llm_algo.train_state():
-        eps = llm_algo.rollout()
-        for ep in eps:
-            llm_algo.logger.info(llm_algo.algorithm_config.metrics_statistics_fn(ep))
+    llm_algo.train_iteration()
 
-# kto rollout
-# ori = prj_path_join("episodes_0_reflex_teach2_iter3.pkl")
-# out = prj_path_join("episodes_0_reflex_teach2_iter4.pkl")
-# it = 4
-# with open(ori, "rb") as f:
+# import pickle
+# from mpi_rl.mpi_rl.algorithm.llm.llm_algo import EpisodeKTO
+# with open("/root/mpi_rl/exps/exp32/episodes_0_reflex.pkl", "rb") as f:
 #     eps = pickle.load(f)
-#     print(f"loaded episodes in {ori}")
 
-# for ep in eps:
-#     llm_algo.kto_iteration(ep, 0, it)
+# wrappers = []
+# for i, ep in enumerate(eps):
+#     wrappers.append(
+#         EpisodeKTO(
+#             ep_idx=i,
+#             agent=None,
+#             episode=ep
+#         )
+#     )
 
-# with open(out, "wb") as f:
-#     pickle.dump(eps, f)
-#     print(f"saved episodes in {out}")
+# if llm_algo.mpi_architecture_config.global_rank == 0:
+#     for w in wrappers:
+#         llm_algo.kto_human_refine(w.episode, w.ep_idx, None)
+#     llm_algo.teach(
+#         wrappers,
+#         [
+#             "/root/mpi_rl/exps/exp32/fine_tune_data/g0_r0_training-main_iter0/kto_finetune_iter0_ep0.json",
+#             "/root/mpi_rl/exps/exp32/fine_tune_data/g0_r0_training-main_iter0/kto_finetune_iter0_ep1.json"
+#         ],
+#         0
+#     )
+
+#     with open("/root/mpi_rl/exps/exp32/episodes_wrappers.pkl", "wb") as f:
+#         pickle.dump(wrappers, f)
