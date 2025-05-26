@@ -700,8 +700,16 @@ class LLM(BaseAlgorithm):
             self.logger.warning("No LLMManager found, can't manager LLMs automatically.")
             return None
         else:
-            # use the first node to finetune
-            finetune_client = self.llm_manager.nodes_config[0]["client"]
+            # Because I using HPC cluster with cloud file system (lustre), so I don't need upload/update the data/config each node
+            # TODO: may support multi-node without cloud file system in the future
+
+            if self.finetune_manager is not None:
+                finetune_client = self.finetune_manager.nodes_config[0]["client"]
+            elif self.llm_manager is not None:
+                # use the first node to finetune
+                finetune_client = self.llm_manager.nodes_config[0]["client"]
+            else:
+                raise ValueError("No finetune manager or LLM manager found.")
 
             # upload the fine-tune data
             self.logger.info("Uploading fine-tune data...")
@@ -786,18 +794,34 @@ class LLM(BaseAlgorithm):
             self.logger.info(f"Merge config: {merge_config_check}")
 
             # fine-tune the LLMs
+            output_filename = f"finetune_log_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}.log"\
+                                if self.finetune_manager is None else\
+                                f"finetune_log_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}.log{{n_idx}}"
             output_file = os.path.join(
                 self.algorithm_config.record_conversation,
                 f"{self.name}_iter{self.progress_info['current_iteration']}",
-                f"finetune_log_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}.log"
+                output_filename
             )
             self.logger.info(f"Fine-tuning LLMs, see log in {output_file}...")
-            finetune_client.run_command(
-                f"FORCE_TORCHRUN=1 llamafactory-cli train {train_config_path} && llamafactory-cli export {merge_config_path}",
-                process_id = f"finetune_{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}",
-                output_file = output_file,
-                print_output = False,
-            )
+            if self.finetune_manager is None:
+                self.logger.info("No finetune manager found, using first inference node to fine-tune.")
+                finetune_client.run_command(
+                    f"FORCE_TORCHRUN=1 llamafactory-cli train {train_config_path} && llamafactory-cli export {merge_config_path}",
+                    process_id = f"finetune_{self.algorithm_config.run_name}_it{self.progress_info['current_iteration']}",
+                    output_file = output_file,
+                    print_output = False,
+                )
+            else:
+                self.logger.info("Finetune manager found, distributed fine-tune.")
+                self.finetune_manager.change_config_path(train_config_path)
+                # distributed training
+                self.finetune_manager.start_nodes(output_file=output_file)
+                # merge the models and adapter
+                finetune_client.run_command(
+                    f"llamafactory-cli export {merge_config_path.format(n_idx='_merge')}",
+                    output_file = output_file,
+                    print_output = False,
+                )
 
             return export_dir
 
