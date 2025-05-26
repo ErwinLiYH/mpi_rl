@@ -73,6 +73,7 @@ class LLMConfig(BaseAlgorithmConfig):
     kto_specified_transaction_process_fn: Callable[[Transaction], JsonableT] = lambda x: x
     kto_max_iteration:int = 5
     kto_early_stop_check_iteration:int = 2
+    kto_UD_ratio:Optional[float] = 1.0
     skip_reflex: bool = False
 
     def __post_init__(self):
@@ -763,12 +764,40 @@ class LLM(BaseAlgorithm):
                 dataset_str = list(dataset_config.keys())[0]
 
             ## update train config
+
+            ### calculate UD (undesireable/desireable) ratio
+            # Nd*Ld / Nu*Lu = kto_UD_ratio
+            if self.algorithm_config.kto_UD_ratio is not None:
+                Nd = 0  # number of desireable data
+                Nu = 0  # number of undesireable data
+                for data in file_names:
+                    with open(data, 'r') as f:
+                        data = json.load(f)
+                    for d in data:
+                        if d["kto_tag"] == True:
+                            Nd += 1
+                        else:
+                            Nu += 1
+                if Nu > Nd:
+                    Lu = 1
+                    Ld =self.algorithm_config.kto_UD_ratio * Nu * Lu / Nd  # lambda_d
+                else:
+                    Ld = 1
+                    Lu = self.algorithm_config.kto_UD_ratio * Nd * Ld / Nu
+                self.logger.info(f"number of desireable data: {Nd}, number of undesireable data: {Nu}")
+            else:
+                Lu = 1
+                Ld = 1
+            self.logger.info(f"lambda_u: {Lu}, lambda_d: {Ld}")
+
             output_dir = f"saves/{self.algorithm_config.run_name}_train_it{self.progress_info['current_iteration']}_kto_it{kto_it_idx}"
             train_config = {
                 "model_name_or_path": self.current_model_path,
                 "dataset": dataset_str,
                 "output_dir": output_dir,
                 "run_name": self.algorithm_config.run_name,
+                "kto_chosen_weight": Ld,
+                "kto_rejected_weight": Lu,
             }
             finetune_client.update_yaml_config(
                 train_config_path,
