@@ -373,3 +373,124 @@ class LLMManager:
             for process in node["processes"]:
                 process[model_path_key] = new_model_path
                 
+def finetune_run(client, command, output_file, print_output, process_id):
+    pid = None
+    try:
+        while True:
+            try:
+                process_id, pid, resp = client.run_command_bg(command, process_id=process_id)
+                break
+            except Exception as e:
+                time.sleep(1)
+        returncode = client.watch_bg_command(
+            resp,
+            output_file=output_file,
+            print_output=print_output,
+        )
+        if returncode != 0:
+            print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished with error code {returncode}, restarting...", flush=True)
+            time.sleep(1)
+            raise RuntimeError(f"Command {command} finished with error code {returncode}")
+        else:
+            return returncode
+    except Exception as e:
+        if pid:
+            print(f"Error: {e}, killing process {pid}", flush=True)
+            client.kill_process(pid)
+        return -1
+
+class FinetuneManager:
+    """
+    Used to run distributed finetune nodes. if one node is down, should close all nodes and restart them.
+    It will block main process.
+    """
+    def __init__(self, nodes_config: List[dict]):
+        self.nodes_config = nodes_config
+        for node in nodes_config:
+            server_url = node["server_url"]
+            client = LLamaFactoryClient(server_url)
+            node["client"] = client
+        self.processes = []
+
+    def start_nodes(self, output_file: Optional[str] = None, process_id: Optional[str] = None):
+        while True:  # Loop until all processes are finished successfully
+            # Use multiprocessing.Process for better control
+            process_info = []  # List of (process, idx) pairs
+            results = multiprocessing.Manager().dict()  # Shared dictionary for results
+            
+            def run_finetune(idx, client, command, output_file, print_output, process_id, results):
+                try:
+                    result = finetune_run(client, command, output_file, print_output, process_id)
+                    results[idx] = result
+                except Exception as e:
+                    print(f"Process {idx} error: {e}", flush=True)
+                    results[idx] = -1
+            
+            # Start all processes
+            process_idx = 0
+            for i, node in enumerate(self.nodes_config):
+                for j, process_config in enumerate(node["processes"]):
+                    command = node["up_command"].format(n_idx=i, p_idx=j, num_n=len(self.nodes_config), **process_config)
+                    
+                    p = multiprocessing.Process(
+                        target=run_finetune,
+                        args=(
+                            process_idx,
+                            node["client"],
+                            command,
+                            output_file.format(n_idx=i, p_idx=j) if output_file else None,
+                            False,
+                            process_id.format(n_idx=i, p_idx=j) if process_id else None,
+                            results
+                        )
+                    )
+                    process_info.append((p, process_idx))
+                    p.start()
+                    process_idx += 1
+            
+            total_processes = process_idx
+            
+            # Monitor for failures
+            all_success = True
+            failure_detected = False
+            
+            while True:
+                still_running = []
+                for p, idx in process_info:
+                    if p.is_alive():
+                        still_running.append((p, idx))
+                    else:
+                        if idx in results and results[idx] != 0:
+                            print(f"Process {idx} failed with result {results[idx]}, terminating other processes...", flush=True)
+                            all_success = False
+                            failure_detected = True
+                            break
+                
+                if failure_detected:
+                    break
+                    
+                process_info = still_running
+                if not process_info:
+                    break
+                    
+                time.sleep(0.1)
+            
+            # Terminate all remaining processes if failure detected
+            if failure_detected:
+                for p, _ in process_info:
+                    p.terminate()
+            
+            # Wait for any remaining processes
+            for p, _ in process_info:
+                p.join()
+            
+            if all_success and len(results) == total_processes and all(results.get(i, -1) == 0 for i in range(total_processes)):
+                break
+            else:
+                print("Some processes failed, restarting all nodes...", flush=True)
+                time.sleep(1)
+
+    def change_config_path(self, new_config_path: str, config_path_key: str = "config_path"):
+        for node in self.nodes_config:
+            for process in node["processes"]:
+                process[config_path_key] = new_config_path
