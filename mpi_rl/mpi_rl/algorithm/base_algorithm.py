@@ -46,7 +46,7 @@ class BaseAlgorithm:
             eval_env_creator: callable = None,
             eval_rollout_config:RolloutConfig = None,
             hard_reset_env:bool = True,
-            separate_eval_proc:bool = True,
+            separate_env_proc:bool = True,
             replay_buffer:ReplayBuffer = None,
             model_config:ModelConfig = None,
             algorithm_config:BaseAlgorithmConfig = None,
@@ -61,7 +61,7 @@ class BaseAlgorithm:
         self.train_rollout_config = train_rollout_config
         self.eval_rollout_config = eval_rollout_config
         self.hard_reset_env = hard_reset_env
-        self.separate_eval_proc = separate_eval_proc
+        self.separate_env_proc = separate_env_proc
         self.mpi_architecture_config = mpi_architecture_config
         self.model_config = model_config
         self.algorithm_config = algorithm_config
@@ -163,7 +163,7 @@ class BaseAlgorithm:
         if self.mpi_architecture_config is not None:       # in mpi mode, check the architecture config
             if "training" in self.mpi_architecture_config.role:  # only init the training env in ranks with training role
                 if self.train_env_creator is not None:
-                    if self.separate_eval_proc:
+                    if self.separate_env_proc:
                         self.train_env = EnvHolder(RemoteObjectProxy(self.train_env_creator, {"algo_name": self.name}))
                         self.train_env_creator = env_creator_remote_maker(self.train_env_creator)
                     else:
@@ -173,7 +173,7 @@ class BaseAlgorithm:
 
             if "evaluation" in self.mpi_architecture_config.role:  # only init the evaluation env in ranks with evaluation role
                 if self.eval_env_creator is not None:
-                    if self.separate_eval_proc:
+                    if self.separate_env_proc:
                         self.eval_env = EnvHolder(RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name}))
                         self.eval_env_creator = env_creator_remote_maker(self.eval_env_creator)
                     else:    
@@ -182,13 +182,13 @@ class BaseAlgorithm:
                     raise ValueError("eval_env_creator should be provided.")
         else: # in non-mpi mode
             if self.train_env_creator is not None:
-                if self.separate_eval_proc:
+                if self.separate_env_proc:
                     self.train_env = EnvHolder(RemoteObjectProxy(self.train_env_creator, {"algo_name": self.name}))
                     self.train_env_creator = env_creator_remote_maker(self.train_env_creator)
                 else:
                     self.train_env = EnvHolder(self.train_env_creator(algo_name=self.name))
             if self.eval_env_creator is not None:
-                if self.separate_eval_proc:
+                if self.separate_env_proc:
                     self.eval_env = EnvHolder(RemoteObjectProxy(self.eval_env_creator, {"algo_name": self.name}))
                     self.eval_env_creator = env_creator_remote_maker(self.eval_env_creator)
                 else:
@@ -197,12 +197,12 @@ class BaseAlgorithm:
                 raise ValueError("train_env_creator or eval_env_creator should be provided.")
 
         if self.train_env is not None:
-            if self.separate_eval_proc:
+            if self.separate_env_proc:
                 self.env_type = self.train_env.env.env_type
             else:
                 self.env_type = get_env_type(self.train_env.env)
         elif self.eval_env is not None:
-            if self.separate_eval_proc:
+            if self.separate_env_proc:
                 self.env_type = self.eval_env.env.env_type
             else:
                 self.env_type = get_env_type(self.eval_env.env)
@@ -217,7 +217,7 @@ class BaseAlgorithm:
             if not self.first_reset:
                 print("reinitializing the env", flush=True)
                 # re-initialize the env
-                if self.separate_eval_proc:
+                if self.separate_env_proc:
                     self._env.env.close()
                 self._env.env = self._env_creator(algo_name=self.name)
             else:
