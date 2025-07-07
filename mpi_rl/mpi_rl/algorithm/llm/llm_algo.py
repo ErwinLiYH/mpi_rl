@@ -120,7 +120,7 @@ class LLM(BaseAlgorithm):
             eval_env_creator = eval_env_creator,
             eval_rollout_config = eval_rollout_config,
             hard_reset_env= hard_reset_env,
-            separate_eval_proc= separate_env_proc,
+            separate_env_proc= separate_env_proc,
             replay_buffer = replay_buffer,
             model_config = None,
             algorithm_config = algorithm_config,
