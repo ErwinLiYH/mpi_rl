@@ -302,13 +302,18 @@ class LLMManager:
     """
     Used to manager LLM inference nodes. All node should run continuously in background, so it don't block main process and if one node is down, it will be restarted automatically.
     """
-    def __init__(self, nodes_config: List[dict]):
+    def __init__(self, nodes_config: List[dict], verbose: bool = True):
         self.nodes_config = nodes_config
+        self.verbose = verbose
         for node in nodes_config:
             server_url = node["server_url"]
             client = LLamaFactoryClient(server_url)
             node["client"] = client
         self.processes = []
+
+    def print(self, message: str):
+        if self.verbose:
+            print(message, flush=True)
 
     def start_nodes(self, output_file: Optional[str] = None, process_id: Optional[str] = None):
         def run(client, command, output_file, print_output, process_id):
@@ -317,20 +322,22 @@ class LLMManager:
                 while True:
                     while True:
                         try:
+                            self.print(f"Try to starting command: {command}", flush=True)
                             process_id, pid, resp = client.run_command_bg(command, process_id=process_id)
                             break
                         except Exception as e:
+                            self.print(f"Error starting command {command}: {e}, retrying...", flush=True)
                             time.sleep(1)
                     returncode = client.watch_bg_command(
                         resp,
                         output_file=output_file,
                         print_output=print_output,
                     )
-                    print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished unexpectedly with returncode {returncode}, restarting...", flush=True)
+                    self.print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished unexpectedly with returncode {returncode}, restarting...", flush=True)
                     time.sleep(1)
             except Exception as e:
                 if pid:
-                    print(f"Error: {e}, killing process {pid}", flush=True)
+                    self.print(f"Error: {e}, killing process {pid}", flush=True)
                     client.kill_process(pid)
         
         for i, node in enumerate(self.nodes_config):
@@ -374,7 +381,7 @@ class LLMManager:
             for process in node["processes"]:
                 process[model_path_key] = new_model_path
                 
-def finetune_run(client, command, output_file, print_output, process_id):
+def finetune_run(client, command, output_file, print_output, process_id, verbose=False):
     pid = None
     try:
         while True:
@@ -389,14 +396,16 @@ def finetune_run(client, command, output_file, print_output, process_id):
             print_output=print_output,
         )
         if returncode != 0:
-            print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished with error code {returncode}, restarting...", flush=True)
+            if verbose:
+                print(f"[<<!!!SERVER ERROR!!!>>] Command {command} finished with error code {returncode}, restarting...", flush=True)
             time.sleep(1)
             raise RuntimeError(f"Command {command} finished with error code {returncode}")
         else:
             return returncode
     except Exception as e:
         if pid:
-            print(f"Error: {e}, killing process {pid}", flush=True)
+            if verbose:
+                print(f"Error: {e}, killing process {pid}", flush=True)
             client.kill_process(pid)
         return -1
 
@@ -405,13 +414,18 @@ class FinetuneManager:
     Used to run distributed finetune nodes. if one node is down, should close all nodes and restart them.
     It will block main process.
     """
-    def __init__(self, nodes_config: List[dict]):
+    def __init__(self, nodes_config: List[dict], verbose: bool = True):
+        self.verbose = verbose
         self.nodes_config = nodes_config
         for node in nodes_config:
             server_url = node["server_url"]
             client = LLamaFactoryClient(server_url)
             node["client"] = client
         self.processes = []
+
+    def print(self, message: str):
+        if self.verbose:
+            print(message, flush=True)
 
     def start_nodes(self, output_file: Optional[str] = None, process_id: Optional[str] = None):
         while True:  # Loop until all processes are finished successfully
@@ -421,10 +435,10 @@ class FinetuneManager:
             
             def run_finetune(idx, client, command, output_file, print_output, process_id, results):
                 try:
-                    result = finetune_run(client, command, output_file, print_output, process_id)
+                    result = finetune_run(client, command, output_file, print_output, process_id, self.verbose)
                     results[idx] = result
                 except Exception as e:
-                    print(f"Process {idx} error: {e}", flush=True)
+                    self.print(f"Process {idx} error: {e}", flush=True)
                     results[idx] = -1
             
             # Start all processes
@@ -462,7 +476,7 @@ class FinetuneManager:
                         still_running.append((p, idx))
                     else:
                         if idx in results and results[idx] != 0:
-                            print(f"Process {idx} failed with result {results[idx]}, terminating other processes...", flush=True)
+                            self.print(f"Process {idx} failed with result {results[idx]}, terminating other processes...", flush=True)
                             all_success = False
                             failure_detected = True
                             break
@@ -488,7 +502,7 @@ class FinetuneManager:
             if all_success and len(results) == total_processes and all(results.get(i, -1) == 0 for i in range(total_processes)):
                 break
             else:
-                print("Some processes failed, restarting all nodes...", flush=True)
+                self.print("Some processes failed, restarting all nodes...", flush=True)
                 time.sleep(1)
 
     def change_config_path(self, new_config_path: str, config_path_key: str = "config_path"):
