@@ -311,9 +311,9 @@ class LLMManager:
             node["client"] = client
         self.processes = []
 
-    def print(self, message: str):
+    def print(self, message: str, **kargs):
         if self.verbose:
-            print(message, flush=True)
+            print(message, **kargs)
 
     def start_nodes(self, output_file: Optional[str] = None, process_id: Optional[str] = None):
         def run(client, command, output_file, print_output, process_id):
@@ -423,9 +423,9 @@ class FinetuneManager:
             node["client"] = client
         self.processes = []
 
-    def print(self, message: str):
+    def print(self, message: str, **kargs):
         if self.verbose:
-            print(message, flush=True)
+            print(message, **kargs)
 
     def start_nodes(self, output_file: Optional[str] = None, process_id: Optional[str] = None):
         while True:  # Loop until all processes are finished successfully
