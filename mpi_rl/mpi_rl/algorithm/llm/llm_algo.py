@@ -58,6 +58,7 @@ class LLMConfig(BaseAlgorithmConfig):
     round_digits: int = 2
     record_conversation: None|Path_Without_NameT = None
     max_history:int = 50
+    actor_rollout_num:int = 1
     reflex_batch:int = 5
     reflex_specific_transaction_process_fn: Optional[Callable[[Transaction], JsonableT]] = None
     fine_tune_data_path: Optional[Path_Without_NameT] = None
@@ -209,8 +210,26 @@ class LLM(BaseAlgorithm):
         
         self.logger.debug(input_sequence)
 
-        content, llm_action, reasoning_content, input_len, output_len = \
-            self.invoke_api(input_sequence)
+        action_list = []
+        info_list = []
+        for _ in range(self.algorithm_config.actor_rollout_num):
+            content, llm_action, reasoning_content, input_len, output_len = \
+                self.invoke_api(input_sequence)
+            action_list.append(llm_action["action"])
+            info_list.append((content, llm_action, reasoning_content, input_len, output_len))
+        # select the most common action
+        if len(action_list) > 0:
+            from collections import Counter
+            action_counter = Counter(action_list)
+            most_common_action, _ = action_counter.most_common(1)[0]
+        # find the content, reasoning_content, input_len, output_len
+        content, llm_action, reasoning_content, input_len, output_len = None, None, None, None, None
+        for i in info_list:
+            if i[1]["action"] == most_common_action:
+                content, llm_action, reasoning_content, input_len, output_len = i
+                break
+        if self.algorithm_config.actor_rollout_num > 1:
+            self.logger.info(f"Actor Rollout - Selected action: {most_common_action} from {action_list}.")
 
         # record
         if self.algorithm_config.record_conversation:
