@@ -623,6 +623,7 @@ class LLM(BaseAlgorithm):
                         "value": f"<think>\n{transaction['reasoning_content']}\n</think>\n{transaction['content']}\n"
                     }
                 ],
+                "source": 0,  # source is used to identify the data source, 0 means from the original transaction
                 "step": trans_idx,
                 "episode_index": ep_idx,
                 "iteration": self.progress_info["current_iteration"],
@@ -642,6 +643,7 @@ class LLM(BaseAlgorithm):
                         "value": f"<think>\n{transaction['reasoning_content']}\n</think>\n{transaction['content']}\n"
                     }
                 ],
+                "source": 0,  # source is used to identify the data source, 0 means from the original transaction
                 "step": trans_idx,
                 "episode_index": ep_idx,
                 "iteration": self.progress_info["current_iteration"],
@@ -680,6 +682,7 @@ class LLM(BaseAlgorithm):
                             "value": f"<think>\n{reasoning_content}\n</think>\n{content}\n"
                         }
                     ],
+                    "source": 1,  # source is used to identify the data source, 1 means from the KTO rollout
                     "step": trans_idx,
                     "episode_index": ep_idx,
                     "iteration": self.progress_info["current_iteration"],
