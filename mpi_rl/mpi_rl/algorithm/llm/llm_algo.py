@@ -705,17 +705,19 @@ class LLM(BaseAlgorithm):
                         f.write(conversation)
                 # stop rollout
                 if self.algorithm_config.kto_rollout_stop_fn(rollout_statistics):
+                    # whether kto finished in this transaction
                     if self.algorithm_config.kto_finish_check_fn(rollout_statistics):
                         reflex["reflection"]["kto_finished"] = True
                         reflex["reflection"]["kto_remark"] = "Kto finished"
                     else:
                         reflex["reflection"]["kto_finished"] = False
                         reflex["reflection"]["kto_remark"] = f"Kto not finished, expected action: {target_action}, rollout statistics: {rollout_statistics}"
+                    # record kto actions
                     if "kto_actions" in reflex["reflection"]:
                         reflex["reflection"]["kto_actions"].append(kto_actions)
                     else:
                         reflex["reflection"]["kto_actions"] = [kto_actions]
-
+                    # whether the transaction is promising
                     if rollout_statistics["good_times"] > 0:
                         reflex["reflection"]["kto_promising"] = True
                     else:
