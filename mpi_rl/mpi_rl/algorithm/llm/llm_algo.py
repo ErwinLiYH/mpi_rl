@@ -402,14 +402,22 @@ class LLM(BaseAlgorithm):
         n_kto_iter = kto_iter_begin
         while True:
             self.logger.info(f"Begin KTO iteration {n_kto_iter} in Training iteration {self.progress_info['current_iteration']} ...")
+            #-------This part should construct no_new_data_to_finetune and finetune_files--------
+            # finetune_files constructed by kto_iter
             if n_kto_iter != kto_iter_begin:
                 no_new_data_to_finetune = []
                 for episode_wrapper in episode_wrappers:
                     no_new_data_to_finetune.append(kto_iter(episode_wrapper))
-            else:   # restart teach(), no need to rollout again
-                finetune_files = restart_finetune_files
-                no_new_data_to_finetune = [False] * len(episode_wrappers)
-
+            else:
+                if restart_finetune_files is not None:
+                    # restart teach(), no need to rollout again
+                    finetune_files = restart_finetune_files
+                    no_new_data_to_finetune = [False] * len(episode_wrappers)
+                else:
+                    no_new_data_to_finetune = []
+                    for episode_wrapper in episode_wrappers:
+                        no_new_data_to_finetune.append(kto_iter(episode_wrapper))
+            #-----------------------------------------------------------------------------------
             if all(no_new_data_to_finetune): # all episodes no new data to finetune
                 self.logger.info("All episodes no new data to finetune.")
                 break
