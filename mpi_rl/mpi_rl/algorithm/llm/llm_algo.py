@@ -506,13 +506,13 @@ class LLM(BaseAlgorithm):
             n_thread = len(invokers)
             self.logger.info(f"Got {n_thread} invokers, using multi-thread mode for KTO.")
             # separate the unfinished transactions into n_thread parts
-            unfinished_transactions_lst = chunk(unfinished_transactions, n_thread)
+            episode_lst = chunk(episode, n_thread)
             # invoke the transactions in parallel
             with ThreadPoolExecutor(max_workers=n_thread) as executor:
                 futures = [
                     executor.submit(
                         self.kto_episode, 
-                        unfinished_transactions_lst[i],
+                        episode_lst[i],
                         invokers[i],
                         ep_idx,
                         i,
@@ -529,7 +529,7 @@ class LLM(BaseAlgorithm):
                 teach_invoke_fn = invokers[0]
             else:
                 teach_invoke_fn = invokers
-            final_data = self.kto_episode(unfinished_transactions, teach_invoke_fn, ep_idx, kto_it_idx, agent)
+            final_data = self.kto_episode(episode, teach_invoke_fn, ep_idx, kto_it_idx, agent)
         # log final situation in this Kto iteration
         rollout_total = 0
         finished_num = 0
@@ -605,8 +605,6 @@ class LLM(BaseAlgorithm):
     def kto_transaction(self, transaction:Transaction, invoker:BaseInvoker, trans_idx:int, ep_idx, thread_idx:int=0, kto_it_idx:int=0, agent=None):
         ep_idx = f"{ep_idx}_{agent}" if agent is not None else ep_idx
         kto_finished = transaction["reflex"]["reflection"].get("kto_finished", False)
-        if kto_finished:
-            return []
         data = []
         input_sequence = transaction["input_sequence"]
         reflex = transaction["reflex"]
@@ -619,7 +617,7 @@ class LLM(BaseAlgorithm):
                 good = reflex_good
             else:
                 raise ValueError("human_good and reflex_good are both None.")
-        if good:
+        if good or kto_finished:
             reflex["reflection"]["kto_finished"] = True
             reflex["reflection"]["kto_remark"] = "Kto finished"
             data.append({
@@ -637,7 +635,7 @@ class LLM(BaseAlgorithm):
                 "step": trans_idx,
                 "episode_index": ep_idx,
                 "iteration": self.progress_info["current_iteration"],
-                "kto_tag": True
+                "kto_tag": good
             })
         else:
             rollout_statistics = {"total_times":0, "good_times":0, "bad_times":0}
@@ -731,6 +729,9 @@ class LLM(BaseAlgorithm):
                     if rollout_statistics["good_times"] > 0:
                         reflex["reflection"]["kto_promising"] = True
                     else:
+                        # remove all rollout data because they are not promising
+                        # because too many bad data will make the model worse
+                        data = [d for d in data if d["source"] == 0]
                         reflex["reflection"]["kto_promising"] = False
                     break
         return data
