@@ -380,7 +380,7 @@ class LLM(BaseAlgorithm):
                 episode_wrapper.total_rollout_list.append(rollout_total)
 
                 # check if reach max iteration
-                if episode_wrapper.num_kto_iter == self.algorithm_config.kto_max_iteration:
+                if episode_wrapper.num_kto_iter == (self.algorithm_config.kto_max_iteration-1):
                     self.logger.info(f"KTO stop - Reason: max iteration {self.algorithm_config.kto_max_iteration} reached in Episode {ep_idx_str}.")
                     episode_wrapper.kto_stop = True
                 
