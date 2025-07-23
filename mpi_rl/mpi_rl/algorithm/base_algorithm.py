@@ -45,6 +45,7 @@ class BaseAlgorithm:
             train_rollout_config:RolloutConfig = None,
             eval_env_creator: callable = None,
             eval_rollout_config:RolloutConfig = None,
+            env_type:Literal["pzp", "gym", "pz_aec"] = None,
             hard_reset_env:bool = True,
             separate_env_proc:bool = True,
             replay_buffer:ReplayBuffer = None,
@@ -60,6 +61,7 @@ class BaseAlgorithm:
         self.eval_env_creator = eval_env_creator
         self.train_rollout_config = train_rollout_config
         self.eval_rollout_config = eval_rollout_config
+        self.env_type = env_type
         self.hard_reset_env = hard_reset_env
         self.separate_env_proc = separate_env_proc
         self.mpi_architecture_config = mpi_architecture_config
@@ -196,18 +198,21 @@ class BaseAlgorithm:
             if self.eval_env is None and self.train_env is None:
                 raise ValueError("train_env_creator or eval_env_creator should be provided.")
 
-        if self.train_env is not None:
-            if self.separate_env_proc:
-                self.env_type = self.train_env.env.env_type
+        # get env_type
+        if self.env_type == None:
+            # if env_type is not provided, try to get it from the env
+            if self.train_env is not None:
+                if self.separate_env_proc:
+                    self.env_type = self.train_env.env.env_type
+                else:
+                    self.env_type = get_env_type(self.train_env.env)
+            elif self.eval_env is not None:
+                if self.separate_env_proc:
+                    self.env_type = self.eval_env.env.env_type
+                else:
+                    self.env_type = get_env_type(self.eval_env.env)
             else:
-                self.env_type = get_env_type(self.train_env.env)
-        elif self.eval_env is not None:
-            if self.separate_env_proc:
-                self.env_type = self.eval_env.env.env_type
-            else:
-                self.env_type = get_env_type(self.eval_env.env)
-        else:
-            raise ValueError("train_env_creator or eval_env_creator should be provided.")
+                raise ValueError("train_env_creator or eval_env_creator should be provided.")
 
     def reset_env(self):
         """

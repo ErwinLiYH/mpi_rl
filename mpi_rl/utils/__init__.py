@@ -81,7 +81,11 @@ class RemoteObjectProxy:
 
     def _run_remote_object(self, remote_obj_creator, conn, kargs=None):
         remote_obj = remote_obj_creator(**kargs) if kargs else remote_obj_creator()
-        env_type = get_env_type(remote_obj)
+        try:
+            env_type = get_env_type(remote_obj)
+        except ValueError as e:
+            print(f"Warning: unknown environment type, please set env_type manually when initializing Algorithm.")
+            env_type = "unknown"
         conn.send(env_type)
         while True:
             try:
