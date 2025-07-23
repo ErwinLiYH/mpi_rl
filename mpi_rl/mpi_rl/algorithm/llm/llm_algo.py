@@ -810,11 +810,21 @@ class LLM(BaseAlgorithm):
                         else:
                             Nu += 1
                 if Nu > Nd:
-                    Lu = 1
-                    Ld =self.algorithm_config.kto_UD_ratio * Nu * Lu / Nd  # lambda_d
+                    if Nd != 0:
+                        Lu = 1
+                        Ld =self.algorithm_config.kto_UD_ratio * Nu * Lu / Nd  # lambda_d
+                    else:
+                        self.logger.warning("No desireable data found, set lambdas to 1.")
+                        Ld = 1
+                        Lu = 1
                 else:
-                    Ld = 1
-                    Lu = self.algorithm_config.kto_UD_ratio * Nd * Ld / Nu
+                    if Nu != 0:
+                        Ld = 1
+                        Lu = self.algorithm_config.kto_UD_ratio * Nd * Ld / Nu
+                    else:
+                        self.logger.warning("No undesireable data found, set lambdas to 1.")
+                        Lu = 1
+                        Ld = 1
                 self.logger.info(f"number of desireable data: {Nd}, number of undesireable data: {Nu}")
             else:
                 Lu = 1
