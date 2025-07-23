@@ -6,7 +6,7 @@ if get_use_mpi():
 from mpi_rl.mpi_rl.algorithm.base_algorithm import BaseAlgorithm, BaseAlgorithmConfig
 from dataclasses import dataclass, field
 
-from typing import Any, Callable, Optional, List
+from typing import Any, Callable, Optional, List, Literal
 
 from mpi_rl.utils.replay_buffer import Episode, ReplayBuffer, Transaction
 from mpi_rl.utils.config_helper import RolloutConfig
