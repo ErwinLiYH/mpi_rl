@@ -1,6 +1,9 @@
 from my_secret_keys import volcano_api_key, bailian_api_key, ds_api_key, openrouter_api_key # use your own API keys
 from my_secret_keys import volcano_r1_name
 
+# set random seed for reproducibility
+from ransim import config as ransim_config
+
 from mpi_rl.mpi_rl.algorithm.llm.llm_algo import LLM, LLMConfig
 from mpi_rl.mpi_rl.algorithm.llm.llm_utils import (
         GeneralRequestInvoker, 
@@ -19,7 +22,6 @@ from copy import deepcopy
 from pathlib import Path
 import os
 import sys
-import pickle
 
 from ransim_env.envs import scenario_two
 from prj_utils import path_allocator
@@ -29,13 +31,16 @@ from Kkit.port_control import PortController
 
 
 mpi_config = MPIArchitectureConfig(
-    num_training_workers=0,
-    num_evaluation_workers=10,
+    num_training_workers=1,
+    num_evaluation_workers=11,
     parallel_train_eval=True,
     centralized_training=True,
     num_workers_per_group=None
 )
 mpi_config.mpi_print_role()
+
+ransim_config.reset_random_seed(50+(0%3)*10)  # random seed for all RANsim environments
+# # replace 42 with None means random random seed (default behavior if dont set this line)
 
 exp_folder = None
 if mpi_config.global_rank == 0:
@@ -46,6 +51,8 @@ if mpi_config.global_rank == 0:
         exp_folder = Path(exp_folder).resolve().as_posix()
 exp_folder = mpi_config.global_comm.bcast(exp_folder, root=0)
 print("Experiment result path:", exp_folder)
+
+# exp_folder = "exps/exp57"
 
 prj_path_join = PathJoin(exp_folder)
 
@@ -118,9 +125,11 @@ qwq32b_invoker_1 = GeneralRequestInvoker(
 
 # Init local invokers
 original_model_name = "qwq32_b"
-nodes_config_model_path = "/lustre/home/yl1118/LLaMA-Factory/output/lrl_20250522_005527_train_it0_kto_it10"# "Qwen/Qwen3-8B"
+nodes_config_model_path = "Qwen/Qwen3-14B" # "/lustre/home/yl1118/LLaMA-Factory/output/lrl_20250522_005527_train_it0_kto_it0" "Qwen/QwQ-32B" "/lustre/home/yl1118/LLaMA-Factory/output/lrl_20250522_005527_train_it0_kto_it1"  "Qwen/QwQ-32B" "Qwen/Qwen3-8B"
+print(f"Model Path: {nodes_config_model_path}")
 nodes_config_model_name = original_model_name
-qwen3=False
+qwen3=True
+qwen3_think=True
 original_ports = [9001, 9002, 9004, 9005, 9007, 9008]
 n_proc_each_port = 2
 
@@ -139,9 +148,9 @@ print(f"{prefix} act_port: {act_port}")
 print(f"{prefix} reflex_port: {reflex_port}")
 print(f"{prefix} teach_port: {teach_port}")
 
-top_p = 0.95
+top_p = 0.95 # 0.8
 top_k = 20
-temp = 0.6
+temp = 0.6 # 0.7
 
 qwq32b_invoker_act = GeneralRequestInvoker(
     full_url=f"http://localhost:{act_port}/v1/chat/completions",
@@ -251,7 +260,7 @@ nodes_config = [
     }
 ]
 
-master_host = "10.122.1.244"
+master_host = "10.122.1.239"
 
 finetune_nodes_config = [
     {
@@ -296,7 +305,7 @@ system_desc = """\
 
 在RAN网络切片的资源分配任务中,Actor需要通过动态调整资源分配(6-40的整数)优化以下三个目标：
 1.最小化SLA违约次数
-2.保持较高的频谱效率, 频谱效率的要求分两种情况：1.流量大于9时理想为5-6.5之间；2.流量小于9时理想为4-5.5
+2.保持较高的频谱效率, 频谱效率的要求分两种情况：1.流量大于9时理想为5-6.5之间；2.流量小于9时理想为4.5-5.2
 3.减少资源调整次数
 
 ## 动作空间
@@ -391,7 +400,10 @@ act_prompt = """\
 ```"""
 
 if qwen3:
-    act_prompt += " /think"
+    if qwen3_think:
+        act_prompt += "\n/think\n"
+    else:
+        act_prompt += "\n/no_think\n"
 
 reflex_prompt = """\
 你是reflector, 结合上面完整的episode信息, 逐条分析其中用<<<< >>>包裹的片段Z:
@@ -504,6 +516,7 @@ def kto_filter(transaction: Transaction):
 llm_config = LLMConfig(
     system_description=system_desc,
     act_prompt=act_prompt,
+    actor_rollout_num=1,
     reflex_prompt=reflex_prompt,
     teach_prompt=teach_prompt,
     act_invoke_fn=lambda x: advanced_retry(qwq32b_invoker_act, 10, 3, messages=x),
@@ -521,16 +534,19 @@ llm_config = LLMConfig(
     initial_train_config_path=os.path.join(os.path.dirname(__file__), "example_train.yaml"),
     initial_merge_config_path=os.path.join(os.path.dirname(__file__), "example_merge.yaml"),
     action_offset=-6,
+    max_history=10,
     kto_rollout_stop_fn=kto_rollout_stop,
     kto_finish_check_fn=kto_finish_check,
     kto_human_refine=True,
     kto_specified_transaction_process_fn=process_transaction_reflex,
     kto_max_iteration=10,
-    kto_early_stop_check_iteration=3,
+    kto_early_stop_check_iteration=10,
     skip_reflex=True,
 )
 
 episode_len = 300
+
+warmup_times = 1050
 
 def train_env_scen2_creator(algo_name):
     return scenario_two.ScenarioTwo(
@@ -540,7 +556,7 @@ def train_env_scen2_creator(algo_name):
         no_termi=True,
         plot = False,
         num_obs_history=1,
-        warmup_times = 75
+        warmup_times = warmup_times
     )
 
 def eval_env_scen2_creator(algo_name):
@@ -551,7 +567,7 @@ def eval_env_scen2_creator(algo_name):
         no_termi=True,
         plot = True,
         num_obs_history=1,
-        warmup_times = 75
+        warmup_times = warmup_times
     )
 
 train_rollout_config = RolloutConfig(
@@ -581,32 +597,37 @@ llm_algo.logger.setLevel("INFO")
 for _ in range(1):
     llm_algo.train_iteration()
 
+# restart teach
 # import pickle
 # from mpi_rl.mpi_rl.algorithm.llm.llm_algo import EpisodeKTO
-# with open("/root/mpi_rl/exps/exp32/episodes_0_reflex.pkl", "rb") as f:
-#     eps = pickle.load(f)
-
-# wrappers = []
-# for i, ep in enumerate(eps):
-#     wrappers.append(
-#         EpisodeKTO(
-#             ep_idx=i,
-#             agent=None,
-#             episode=ep
-#         )
-#     )
 
 # if llm_algo.mpi_architecture_config.global_rank == 0:
-#     for w in wrappers:
-#         llm_algo.kto_human_refine(w.episode, w.ep_idx, None)
-#     llm_algo.teach(
-#         wrappers,
-#         [
-#             "/root/mpi_rl/exps/exp32/fine_tune_data/g0_r0_training-main_iter0/kto_finetune_iter0_ep0.json",
-#             "/root/mpi_rl/exps/exp32/fine_tune_data/g0_r0_training-main_iter0/kto_finetune_iter0_ep1.json"
-#         ],
-#         0
-#     )
+#     with open("/root/mpi_rl/exps/exp57/episodes_0_reflex.pkl", "rb") as f:
+#         eps = pickle.load(f)
 
-#     with open("/root/mpi_rl/exps/exp32/episodes_wrappers.pkl", "wb") as f:
+#     for idx, ep in enumerate(eps):
+#         if llm_algo.algorithm_config.kto_human_refine:
+#             llm_algo.kto_human_refine(ep, idx)
+
+#     wrappers = []
+#     for i, ep in enumerate(eps):
+        
+#         for trans in ep:
+#             # if trans["transaction"]["reflex"]["reflection"]["kto_finished"] exits, remove this key
+#             trans["transaction"]["reflex"]["reflection"].pop("kto_finished", None)
+#             # if trans["transaction"]["reflex"]["reflection"]["kto_promising"] exits, remove this key
+#             trans["transaction"]["reflex"]["reflection"].pop("kto_promising", None)
+#             # if trans["transaction"]["reflex"]["reflection"]["kto_remark"] exits, remove this key
+#             trans["transaction"]["reflex"]["reflection"].pop("kto_remark", None)
+#         wrappers.append(
+#             EpisodeKTO(
+#                 ep_idx=i,
+#                 agent=None,
+#                 episode=ep
+#             )
+#         )
+    
+#     llm_algo.teach(wrappers)
+
+#     with open("/root/mpi_rl/exps/exp57/episodes_wrappers.pkl", "wb") as f:
 #         pickle.dump(wrappers, f)
